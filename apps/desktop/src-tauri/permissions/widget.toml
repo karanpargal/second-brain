@@ -1,0 +1,14 @@
+[[permission]]
+identifier = "allow-widget-commands"
+description = "Allow Second Brain widget IPC (hide, quit, pin, mode, capture)"
+commands.allow = [
+  "hide_widget",
+  "quit_app",
+  "set_widget_mode",
+  "set_always_on_top",
+  "core_base_url",
+  "api_token",
+  "capture_status",
+  "pause_capture",
+  "resume_capture"
+]

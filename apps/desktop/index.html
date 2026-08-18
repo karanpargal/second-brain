@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Second Brain</title>
+    <style>
+      :root { color-scheme: dark; font-family: "Segoe UI", system-ui, sans-serif; }
+      body {
+        margin: 0;
+        background: #0c0c0e;
+        color: #e4e4e7;
+        min-height: 100vh;
+      }
+      .wrap {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 14px;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        background: #18181b;
+      }
+      header h1 {
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #a5b4fc;
+        margin: 0;
+      }
+      .actions { display: flex; gap: 8px; }
+      button {
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.1);
+        color: #e4e4e7;
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      button:hover { background: rgba(255,255,255,0.12); }
+      button.primary {
+        background: #6366f1;
+        border-color: transparent;
+      }
+      iframe {
+        flex: 1;
+        border: 0;
+        width: 100%;
+        background: #0c0c0e;
+      }
+      .status {
+        font-size: 11px;
+        color: #71717a;
+        padding: 0 14px 8px;
+      }
+      .status.ok { color: #34d399; }
+      .status.bad { color: #f87171; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>Second Brain</h1>
+        <div class="actions">
+          <button id="btn-pause" type="button">Pause 1h</button>
+          <button id="btn-resume" type="button">Resume</button>
+          <button id="btn-open" class="primary" type="button">Open UI</button>
+        </div>
+      </header>
+      <div id="status" class="status">checking…</div>
+      <iframe id="frame" title="Second Brain UI" src="http://127.0.0.1:5173"></iframe>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
