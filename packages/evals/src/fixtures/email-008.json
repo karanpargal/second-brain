@@ -1,0 +1,11 @@
+{
+  "id": "email-008",
+  "source": "email",
+  "label": "not_loop",
+  "input": {
+    "kind": "spam",
+    "title": "Complete your purchase — reminder: your cart",
+    "body": "Act now! Shop now before items sell out. One-click unsubscribe.",
+    "author": "marketing@deals.biz"
+  }
+}

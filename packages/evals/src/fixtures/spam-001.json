@@ -1,0 +1,11 @@
+{
+  "id": "spam-001",
+  "source": "email",
+  "label": "not_loop",
+  "input": {
+    "kind": "email",
+    "title": "You won a giveaway — claim NFT now",
+    "body": "Sponsored advertisement. Unsubscribe | Manage preferences | View in browser.",
+    "author": "promo@crypto-airdrop.biz"
+  }
+}

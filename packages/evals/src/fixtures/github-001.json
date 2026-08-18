@@ -1,0 +1,12 @@
+{
+  "id": "github-001",
+  "source": "github",
+  "label": "is_loop",
+  "expectedTitleContains": "Review PR",
+  "input": {
+    "kind": "pr",
+    "title": "fix: add offline sync for widget",
+    "body": "Please review this PR — requested your review. Waiting on approval.",
+    "author": "karan"
+  }
+}

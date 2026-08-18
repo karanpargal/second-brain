@@ -1,0 +1,12 @@
+{
+  "id": "trading-002",
+  "source": "trading",
+  "label": "is_loop",
+  "expectedTitleContains": "stop",
+  "input": {
+    "app": "TradingView",
+    "windowTitle": "TradingView — NVDA",
+    "url": "https://www.tradingview.com/chart",
+    "text": "NVDA Long\nPosition size 50\nEntry 920\nUnrealized PnL -8%\nSL --\nNo stop-loss\nTake profit $980\nLeverage 5x"
+  }
+}

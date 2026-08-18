@@ -1,0 +1,11 @@
+{
+  "id": "email-011",
+  "source": "email",
+  "label": "not_loop",
+  "input": {
+    "kind": "email",
+    "title": "Action Required: Promote Your ENS Domain to v2",
+    "body": "Action Required: Promote your ENS domain to v2 to keep your name working. Claim your domain now.",
+    "author": "ENS <noreply@ens.domains>"
+  }
+}

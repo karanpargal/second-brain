@@ -1,0 +1,11 @@
+{
+  "id": "email-010",
+  "source": "email",
+  "label": "not_loop",
+  "input": {
+    "kind": "notification",
+    "title": "Receipt: Order #9912 shipped",
+    "body": "Your package is on the way. Track it in the app.",
+    "author": "noreply@amazon.com"
+  }
+}

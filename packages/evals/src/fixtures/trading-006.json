@@ -1,0 +1,11 @@
+{
+  "id": "trading-006",
+  "source": "trading",
+  "label": "not_loop",
+  "input": {
+    "app": "Binance",
+    "windowTitle": "Binance | BTCUSDT",
+    "url": "https://www.binance.com/en/futures",
+    "text": "BTCUSDT Long\nPositions\nEntry 63000\nSize 0.1\nTP $65000\nSL $61000\nUnrealized PnL +2%\nTake-profit and stop-loss set"
+  }
+}

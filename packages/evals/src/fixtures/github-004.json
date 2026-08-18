@@ -1,0 +1,11 @@
+{
+  "id": "github-004",
+  "source": "github",
+  "label": "is_loop",
+  "input": {
+    "kind": "issue",
+    "title": "Follow-up: document eval harness",
+    "body": "I promised to write the README. Don't forget to link from AGENTS.md.",
+    "author": "karan"
+  }
+}

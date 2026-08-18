@@ -1,0 +1,10 @@
+{
+  "id": "ocr-006",
+  "source": "ocr",
+  "label": "not_loop",
+  "input": {
+    "app": "Explorer",
+    "windowTitle": "Downloads",
+    "text": "Name Date\nreport.pdf yesterday\ninvoice.xlsx last week"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "email-003",
+  "source": "email",
+  "label": "is_loop",
+  "input": {
+    "kind": "email",
+    "title": "Action item: update the launch checklist",
+    "body": "I need to finish the checklist before EOD tomorrow. Please send the latest assets.",
+    "author": "pm@acme.com"
+  }
+}

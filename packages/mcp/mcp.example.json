@@ -1,0 +1,13 @@
+# MCP registration example — copy paths into Cursor MCP settings
+# File typically: %USERPROFILE%\.cursor\mcp.json
+
+{
+  "mcpServers": {
+    "second-brain": {
+      "command": "npx",
+      "args": ["tsx", "packages/mcp/src/index.ts"],
+      "cwd": "C:/Users/karan/OneDrive/Desktop/Personal/second-brain",
+      "env": {}
+    }
+  }
+}

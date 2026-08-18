@@ -1,0 +1,11 @@
+{
+  "id": "github-008",
+  "source": "github",
+  "label": "not_loop",
+  "input": {
+    "kind": "notification",
+    "title": "Someone starred your repository",
+    "body": "A user starred second-brain.",
+    "author": "notifications@github.com"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "github-007",
+  "source": "github",
+  "label": "not_loop",
+  "input": {
+    "kind": "notification",
+    "title": "CI passed on main",
+    "body": "All checks successful for commit abc123.",
+    "author": "github-actions[bot]"
+  }
+}

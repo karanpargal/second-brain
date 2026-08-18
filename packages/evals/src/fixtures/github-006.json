@@ -1,0 +1,11 @@
+{
+  "id": "github-006",
+  "source": "github",
+  "label": "not_loop",
+  "input": {
+    "kind": "notification",
+    "title": "[dependabot] Bump lodash from 4.17.20 to 4.17.21",
+    "body": "Automated dependency update. No human action required beyond merge bot.",
+    "author": "dependabot[bot]"
+  }
+}

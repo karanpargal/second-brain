@@ -1,0 +1,11 @@
+{
+  "id": "email-002",
+  "source": "email",
+  "label": "is_loop",
+  "input": {
+    "kind": "email",
+    "title": "Waiting on your signature",
+    "body": "Hi — still waiting for the signed appendix. Don't forget to send it back.",
+    "author": "legal@partner.co"
+  }
+}

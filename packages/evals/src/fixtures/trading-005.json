@@ -1,0 +1,11 @@
+{
+  "id": "trading-005",
+  "source": "trading",
+  "label": "not_loop",
+  "input": {
+    "app": "TradingView",
+    "windowTitle": "TradingView — watchlist",
+    "url": "https://www.tradingview.com",
+    "text": "Watchlist\nAAPL 190\nMSFT 420\nNo open positions\nMarket overview"
+  }
+}

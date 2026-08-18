@@ -1,0 +1,11 @@
+{
+  "id": "email-006",
+  "source": "email",
+  "label": "not_loop",
+  "input": {
+    "kind": "newsletter",
+    "title": "Your weekly roundup — digest for you",
+    "body": "Unsubscribe | View in browser | Manage preferences. This week's top stories...",
+    "author": "newsletter@techcrunch.com"
+  }
+}

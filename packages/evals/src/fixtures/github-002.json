@@ -1,0 +1,11 @@
+{
+  "id": "github-002",
+  "source": "github",
+  "label": "is_loop",
+  "input": {
+    "kind": "issue",
+    "title": "Bug: capture fails on multi-monitor",
+    "body": "Need to investigate DPI scaling. Can you take a look by Friday?",
+    "author": "coworker"
+  }
+}

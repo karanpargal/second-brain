@@ -1,0 +1,11 @@
+{
+  "id": "trading-004",
+  "source": "trading",
+  "label": "is_loop",
+  "input": {
+    "app": "Chrome",
+    "windowTitle": "Hyperliquid",
+    "url": "https://app.hyperliquid.xyz",
+    "text": "ETH Long\nOpen interest rising\nUnrealized PnL -$2,100 (-28%)\nCross account leverage\nCreate TP/SL\nFunding/countdown"
+  }
+}

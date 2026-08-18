@@ -1,0 +1,10 @@
+{
+  "id": "ocr-003",
+  "source": "ocr",
+  "label": "not_loop",
+  "input": {
+    "app": "Chrome",
+    "windowTitle": "Docs — Launch plan",
+    "text": "TODO: follow-up with design. I need to finish the brief by tomorrow. Don't forget the action item list."
+  }
+}

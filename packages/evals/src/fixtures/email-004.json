@@ -1,0 +1,11 @@
+{
+  "id": "email-004",
+  "source": "email",
+  "label": "is_loop",
+  "input": {
+    "kind": "email",
+    "title": "Follow-up from our call",
+    "body": "As discussed I'll send the proposal. Looking for your suggest on pricing.",
+    "author": "alex@vendor.io"
+  }
+}

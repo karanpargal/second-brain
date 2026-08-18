@@ -1,0 +1,11 @@
+{
+  "id": "email-007",
+  "source": "email",
+  "label": "not_loop",
+  "input": {
+    "kind": "email",
+    "title": "Flash sale — 40% off everything",
+    "body": "Limited-time offer! Buy now with free shipping. Coupon code SAVE40. Unsubscribe anytime.",
+    "author": "noreply@shopify-store.com"
+  }
+}

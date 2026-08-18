@@ -1,0 +1,11 @@
+{
+  "id": "spam-002",
+  "source": "email",
+  "label": "not_loop",
+  "input": {
+    "kind": "email",
+    "title": "We miss you — come back and save",
+    "body": "It's been a while! Flash sale ends tonight. Shop now. Free shipping.",
+    "author": "noreply@retailer.com"
+  }
+}

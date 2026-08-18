@@ -1,0 +1,11 @@
+{
+  "id": "github-005",
+  "source": "github",
+  "label": "is_loop",
+  "input": {
+    "kind": "pr",
+    "title": "feat: trading TP/SL coach",
+    "body": "Looking for a second pair of eyes before we ship.",
+    "author": "teammate"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "id": "ocr-001",
+  "source": "ocr",
+  "label": "not_loop",
+  "input": {
+    "app": "Chrome",
+    "windowTitle": "Gmail - Inbox",
+    "text": "Inbox\nStarred\nSnoozed\nSidebar: Suggested replies\n  can you\n  thanks!\n  sounds good\nPrimary\nMeeting notes from last week — FYI only, no asks."
+  }
+}

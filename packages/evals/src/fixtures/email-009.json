@@ -1,0 +1,11 @@
+{
+  "id": "email-009",
+  "source": "email",
+  "label": "not_loop",
+  "input": {
+    "kind": "email",
+    "title": "LinkedIn: people you may know",
+    "body": "Join my network — connections in common on your professional network.",
+    "author": "notifications@linkedin.com"
+  }
+}

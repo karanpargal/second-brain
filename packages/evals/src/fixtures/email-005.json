@@ -1,0 +1,11 @@
+{
+  "id": "email-005",
+  "source": "email",
+  "label": "is_loop",
+  "input": {
+    "kind": "email",
+    "title": "Please confirm vendor shortlist",
+    "body": "Can you please confirm which vendors we should keep? Need to decide by Monday.",
+    "author": "ops@acme.com"
+  }
+}

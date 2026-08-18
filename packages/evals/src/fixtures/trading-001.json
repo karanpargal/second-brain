@@ -1,0 +1,12 @@
+{
+  "id": "trading-001",
+  "source": "trading",
+  "label": "is_loop",
+  "expectedTitleContains": "TP/SL",
+  "input": {
+    "app": "Chrome",
+    "windowTitle": "Trench | SOL-PERP",
+    "url": "https://trench.ag/trade",
+    "text": "Positions\nSOL Long\nSize 1.2\nEntry 148.2\nUnrealized PnL -$420 (-12%)\n+ Create TP/SL\nTP --\nSL --\nMark price 141.1\nCross margin"
+  }
+}

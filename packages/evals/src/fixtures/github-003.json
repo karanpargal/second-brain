@@ -1,0 +1,11 @@
+{
+  "id": "github-003",
+  "source": "github",
+  "label": "is_loop",
+  "input": {
+    "kind": "pr",
+    "title": "chore: bump deps",
+    "body": "Action item for reviewers: please confirm CI is green then merge.",
+    "author": "dev"
+  }
+}

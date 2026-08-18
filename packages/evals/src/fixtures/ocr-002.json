@@ -1,0 +1,10 @@
+{
+  "id": "ocr-002",
+  "source": "ocr",
+  "label": "not_loop",
+  "input": {
+    "app": "Notion",
+    "windowTitle": "Personal wiki",
+    "text": "Random notes\n# groceries\nmilk eggs bread\n# movies\nrewatch dune"
+  }
+}

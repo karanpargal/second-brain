@@ -1,0 +1,12 @@
+{
+  "id": "email-013",
+  "source": "email",
+  "label": "is_loop",
+  "expectedTitleContains": "Review",
+  "input": {
+    "kind": "email",
+    "title": "Action required: please review the contract",
+    "body": "Please review the attached MSA and confirm by Friday.",
+    "author": "Legal <legal@partner.co>"
+  }
+}

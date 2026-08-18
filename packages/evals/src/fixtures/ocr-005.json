@@ -1,0 +1,10 @@
+{
+  "id": "ocr-005",
+  "source": "ocr",
+  "label": "not_loop",
+  "input": {
+    "app": "Chrome",
+    "windowTitle": "YouTube",
+    "text": "Recommended\nFunny cats compilation\nSubscribe\nComments: lol can you believe this"
+  }
+}
