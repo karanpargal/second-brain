@@ -1,0 +1,38 @@
+---
+description: One-click desktop app is mandatory — never require users to run npm terminals to use the product
+alwaysApply: true
+---
+
+# One-click desktop app (hard rule)
+
+## Product law
+
+**Opening the Desktop app is the full product.** The user must **never** need to run `npm start`, `npm run dev:worker`, `npm run dev:web`, or any other terminal commands for day-to-day use.
+
+If a feature requires "first start the API in another terminal", that design is **wrong** — fix the desktop shell so it owns the lifecycle.
+
+## Requirements (always)
+
+1. **Desktop is the entrypoint** — tray + floating widget (or main window). Double-click / Start Menu / Desktop shortcut launches **one** process path that the user recognizes as the app.
+2. **Core auto-start** — On launch, the desktop shell **must**:
+   - Start the local Node core (API + scheduler + static UI) if not already healthy
+   - Wait until `/api/health` is OK
+   - Load the widget/UI itself
+   - Start ambient capture
+3. **No browser for primary UX** — Do not open Chrome/Edge as the default UI. Browser is optional overflow ("full dashboard") only.
+4. **Core stays child / supervised** — Prefer spawning core from the desktop process; quit of the app should stop owned core (or document intentional detach for always-on).
+5. **Shortcut points at the app** — Desktop/Start Menu shortcuts target the built `.exe` (or a tiny launcher that only starts that `.exe`), **not** a stack of npm scripts as the primary path.
+6. **Dev terminals are for developers only** — `npm run dev:*` can exist for engineering; they are never the documented "how you use Second Brain" path.
+
+## When implementing features
+
+- New UI: ship in the widget and/or SPA served by core; surface it in the desktop shell.
+- New background work: run via core scheduler started by desktop, not a separate manual process.
+- Packaging: prefer `package:app` / Tauri build producing a double-clickable executable.
+
+## Anti-patterns (do not ship)
+
+- "Run these 3 commands every morning"
+- API only on localhost with no desktop host
+- Shortcut that runs `npm` and leaves a console window as the product
+- Docs that treat browser + terminals as the main UX

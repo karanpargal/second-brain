@@ -1,0 +1,14 @@
+---
+description: Product-feature agent graph — analyze need/built/working vs personal desktop AI agent
+globs: agents/graph/**
+alwaysApply: false
+---
+
+# Feature graph
+
+When editing or running files under `agents/graph/`, follow `agents/graph/GRAPH.md` and `agents/graph/NORTH-STAR.md`.
+
+- Each agent appends what / why / evidence to its own markdown file.
+- Parallelize Security, Logic, and Style reviews.
+- Verdicts: KEEP, FIX, CUT, MISSING.
+- Users open the desktop .exe only — never document npm as the product path.
