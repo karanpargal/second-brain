@@ -11,10 +11,10 @@ describe("mail categories", () => {
     const r = classifyMailLoop({
       subject: "Interested in engineering at Rivet",
       body: "Hi, I'm Karan — I'd love to work on Rust and actors at Rivet. Resume attached.",
-      from: "Karan Pargal <karanpargal007@gmail.com>",
+      from: "Karan Pargal <you@example.com>",
       to: "hiring@rivet.dev",
       labels: ["SENT"],
-      userEmail: "karanpargal007@gmail.com",
+      userEmail: "you@example.com",
       kind: "email",
     });
     expect(r.keep).toBe(true);
