@@ -1,0 +1,11 @@
+{
+  "id": "chat-008",
+  "source": "chat",
+  "label": "is_loop",
+  "expectedTitleContains": "bill",
+  "input": {
+    "app": "WhatsApp.Root",
+    "windowTitle": "WhatsApp",
+    "text": "Chats Search start a new chat Yeh bhi kr liya click here for contact info 26/07/2026 You: I will send the bill by tomorrow Type a message"
+  }
+}

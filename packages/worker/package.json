@@ -17,6 +17,7 @@
     "@second-brain/enrich": "*",
     "@second-brain/agents": "*",
     "@second-brain/capture": "*",
+    "@second-brain/evals": "*",
     "node-cron": "^3.0.3"
   },
   "devDependencies": {

@@ -133,6 +133,7 @@ export const config = {
     backup: "0 3 * * *",
     reminders: "*/1 * * * *",
     insights: "0 8 * * 1",
+    evals: "20 4 * * *",
   },
   hostedLlm: {
     url: process.env.BRAIN_HOSTED_LLM_URL ?? "",

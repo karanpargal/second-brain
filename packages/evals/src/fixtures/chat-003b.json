@@ -1,0 +1,11 @@
+{
+  "id": "chat-003b",
+  "source": "chat",
+  "label": "is_loop",
+  "expectedTitleContains": "Raj",
+  "input": {
+    "app": "Telegram",
+    "windowTitle": "Raj — Telegram Desktop",
+    "text": "Raj\nplease confirm the time for tomorrow\nType a message"
+  }
+}

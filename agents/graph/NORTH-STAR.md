@@ -20,7 +20,7 @@ A **personal** assistant that lives on this PC and:
 ## What it is not
 
 - A multi-tenant SaaS or a team workspace.
-- A trading desk, a chat-app **scraper** (no QR, no OAuth, no OCR of message bodies), or a generic "second brain" wiki.
+- A trading desk, a chat-app connector (no QR, no OAuth, no sending), or a generic "second brain" wiki.
 - A product that requires `npm run` for daily use.
 - An agent that sends mail, comments on PRs, or mutates external accounts.
 
@@ -33,7 +33,9 @@ A **personal** assistant that lives on this PC and:
 | Upskill | Insights from real activity, not empty profile prompts |
 | Spam / noise | Hide what is not yours to track; learn from "spam" / "not tracking" |
 
-Sources: **Gmail, Calendar, GitHub, browser history, PC capture**. Chat apps (WhatsApp / Telegram / Slack / Discord / Signal / Teams) are **window-title only, zero friction** — no connect flow. OCR of chat bodies stays off. Contact names are not Improve topics.
+Sources: **Gmail, Calendar, GitHub, browser history, PC capture**, plus **WhatsApp / Telegram** (focused-window OCR of the visible thread to tell an ask from idle chat). No QR, no OAuth, nothing is sent. Contact names are not Improve topics. Trading desks are out of the product.
+
+Nightly (and on boot) the core runs evals against heuristic fixtures **and** local Ollama STRUCTURE_LOOPS goldens, then feeds misses back as few-shot so loop extraction improves itself.
 
 ## Verdict vocabulary (every feature)
 

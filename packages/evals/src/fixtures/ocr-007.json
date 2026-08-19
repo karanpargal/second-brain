@@ -1,0 +1,10 @@
+{
+  "id": "ocr-007",
+  "source": "ocr",
+  "label": "not_loop",
+  "input": {
+    "app": "Binance",
+    "windowTitle": "Binance",
+    "text": "Unrealized PnL -12% Open Long BTC missing TP/SL"
+  }
+}

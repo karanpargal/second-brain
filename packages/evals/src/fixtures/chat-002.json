@@ -1,0 +1,9 @@
+{
+  "id": "chat-002",
+  "source": "chat",
+  "label": "not_loop",
+  "input": {
+    "app": "WhatsApp",
+    "windowTitle": "WhatsApp"
+  }
+}

@@ -16,6 +16,7 @@ import {
 import { retrieveMemory } from "@second-brain/enrich";
 import { eq } from "drizzle-orm";
 import { createReminder } from "./reminders.js";
+import { detectChatApp } from "./chat-actions.js";
 
 export { listRecentlyAutoClosed } from "./loops.js";
 
@@ -135,11 +136,26 @@ export function listOpenLoops(status = "open") {
           .from(observations)
           .where(eq(observations.id, e.observationId))
           .get();
-        if (o?.url) {
-          sourceUrl = o.url;
-          sourceKind = "pc";
-          sourceLabel = "Open page";
-          break;
+        if (o) {
+          let metaChat = false;
+          try {
+            metaChat = JSON.parse(o.metaJson || "{}")?.chat === true;
+          } catch {
+            /* */
+          }
+          const chatApp = detectChatApp(o.app, o.exe, o.windowTitle, o.url);
+          if (metaChat || chatApp) {
+            sourceKind = "chat";
+            sourceLabel = chatApp ?? "Chat";
+            sourceUrl = o.url ?? urlFromNote;
+            break;
+          }
+          if (o.url) {
+            sourceUrl = o.url;
+            sourceKind = "pc";
+            sourceLabel = "Open page";
+            break;
+          }
         }
       }
       if (urlFromNote) {

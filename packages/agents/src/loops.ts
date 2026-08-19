@@ -4,7 +4,6 @@ import {
   openLoops,
   loopEvidence,
   observations,
-  userProfiles,
   settings,
   reminders,
   newId,
@@ -18,12 +17,15 @@ import { eq } from "drizzle-orm";
 import { runLlm, parseJsonFromText } from "./llm.js";
 import { cosine, embedText } from "@second-brain/enrich";
 import {
-  isTradingSurface,
-  scoreTradingAction,
-  tradingExitEvidence,
-} from "./trading-actions.js";
+  isChatSurface,
+  parseChatPeer,
+  scoreChatAction,
+  detectChatApp,
+} from "./chat-actions.js";
+import { evalFewShotForPrompt } from "./eval-learn.js";
 import { getLoopLlmBudget } from "./loop-budget.js";
-import { parseDueAt } from "./due.js";
+import { parseDueAt, parseDueHint } from "./due.js";
+import { polishChatCandidates } from "./polish-chat.js";
 import { computePriority } from "./priority.js";
 import {
   loopsAreDuplicate,
@@ -58,11 +60,15 @@ export type LoopCandidate = {
   observationId?: string;
   snippet: string;
   sourceUrl?: string;
-  /** item (email/issue/PR) | ocr (screen capture) */
-  source?: "item" | "ocr";
+  /** item (email/issue/PR) | ocr | chat (window title only) */
+  source?: "item" | "ocr" | "chat";
   category?: string;
   tags?: string[];
   fromMe?: boolean;
+  /** Raw chat OCR for local LLM polish */
+  ocrText?: string;
+  /** Set false by chat OCR polish to drop idle threads */
+  keep?: boolean;
 };
 
 const WEEK_MS = 7 * 24 * 3600_000;
@@ -171,42 +177,6 @@ function blockedForLoops(input: {
   return isSpam(input);
 }
 
-/** Trading is opt-in. Empty profile / missing setting must not create TP/SL tasks. */
-export function isTradingInterestEnabled(): boolean {
-  const db = getDb();
-  try {
-    const row = db
-      .select()
-      .from(settings)
-      .all()
-      .find((r) => r.key === "interests.trading");
-    if (row) {
-      const v = JSON.parse(row.valueJson);
-      if (v === true || v === "true" || v === 1) return true;
-      if (v === false || v === "false" || v === 0) return false;
-    }
-  } catch {
-    /* */
-  }
-
-  const profile = db
-    .select()
-    .from(userProfiles)
-    .all()
-    .find((p) => p.id === "local");
-  if (!profile) return false;
-
-  try {
-    const packs = JSON.parse(profile.interestPacksJson || "[]") as unknown;
-    if (Array.isArray(packs)) {
-      return packs.map(String).includes("trading");
-    }
-  } catch {
-    /* */
-  }
-  return false;
-}
-
 /**
  * Cheap heuristic candidates: items (email/issue/PR) + OCR observations.
  * Regex scores are RECALL only (threshold ~0.35); the LLM verifies everything.
@@ -221,8 +191,6 @@ export function collectLoopCandidates(
   const sinceIso = opts.sinceMinutes
     ? new Date(Date.now() - opts.sinceMinutes * 60_000).toISOString()
     : weekAgo;
-  const obsLimit = opts.obsOnly ? 40 : 120;
-  const tradingOk = isTradingInterestEnabled();
 
   // --- 1) Items (email / issue / PR) ---
   if (!opts.obsOnly) {
@@ -308,76 +276,78 @@ export function collectLoopCandidates(
     }
   }
 
-  // --- 2) OCR / observations (screen capture; chat surfaces are skipped) ---
-  const recentObs = db
+  // --- 2) Chat OCR: scan chat observations, not a global slice of every app ---
+  const chatObs = db
     .select()
     .from(observations)
     .all()
-    .filter((o) => o.ts >= sinceIso && o.text && o.text.length >= 8)
+    .filter(
+      (o) =>
+        o.ts >= sinceIso &&
+        o.source === "ocr" &&
+        isChatSurface(o.app, o.exe, o.windowTitle, o.url),
+    )
     .sort((a, b) => b.ts.localeCompare(a.ts))
-    .slice(0, obsLimit);
+    .slice(0, 40);
 
-  for (const o of recentObs) {
-    const surface = {
+  const seenChat = new Set<string>();
+  for (const o of chatObs) {
+    const scored = scoreChatAction({
+      windowTitle: o.windowTitle,
       app: o.app,
       exe: o.exe,
-      windowTitle: o.windowTitle,
       url: o.url,
-      text: o.text ?? "",
-    };
-    const trading = isTradingSurface(surface);
-    if (trading && !tradingOk) continue;
-    if (
-      /\b(tp\/?sl|take[- _]?profit|stop[- _]?loss|set_stop_loss|set tp)\b/i.test(
-        `${o.windowTitle ?? ""} ${o.text ?? ""}`,
-      ) &&
-      !tradingOk
-    ) {
-      continue;
-    }
+      text: o.text,
+    });
+    if (!scored) continue;
+    const hit = parseChatPeer(
+      o.windowTitle ?? "",
+      o.app,
+      o.exe,
+      o.url,
+      o.text,
+    );
+    const peer =
+      scored.peer ??
+      (hit?.peer && hit.peer !== "this chat" ? hit.peer : undefined);
+    const appName = hit?.app ?? detectChatApp(o.app, o.exe, o.windowTitle, o.url);
+    if (!appName) continue;
     if (
       blockedForLoops({
-        title: o.windowTitle,
-        body: o.text,
-        url: o.url,
-        kind: trading ? "trading" : "pc",
+        title: scored.actionTitle,
+        body: scored.snippet,
+        kind: "chat",
       })
     ) {
       continue;
     }
-
-    if (tradingOk) {
-      const tradeHit = scoreTradingAction(surface);
-      if (tradeHit && tradeHit.score >= RECALL_THRESHOLD) {
-        const venueBit = tradeHit.venue ? ` on ${tradeHit.venue}` : "";
-        const recall = Math.min(0.9, tradeHit.score);
-        out.push({
-          title: tradeHit.actionTitle,
-          description: `${tradeHit.actionTitle}${venueBit}. ${
-            tradeHit.reason.includes("missing_tp_sl")
-              ? "Open position looks unprotected (no TP/SL)."
-              : "Trading risk spotted from your screen."
-          } ${(o.text ?? "").slice(0, 280)}`.slice(0, 400),
-          kind: tradeHit.kind,
-          who: tradeHit.who,
-          recallScore: recall,
-          confidence: recall,
-          observationId: o.id,
-          snippet: (o.text ?? "").slice(0, 500),
-          sourceUrl: o.url ?? undefined,
-          source: "ocr",
-        });
-        continue;
-      }
-    }
-
-    // OCR is memory, not a loop source. Chat/docs "Continue:" cards were noise.
-    continue;
+    const key = `${appName}:${(peer ?? "chat").toLowerCase()}:${scored.actionTitle.toLowerCase().slice(0, 40)}`;
+    if (seenChat.has(key)) continue;
+    seenChat.add(key);
+    out.push({
+      title: scored.actionTitle,
+      description: scored.snippet,
+      kind: scored.fromMe ? "promise" : "unfinished",
+      who: peer,
+      dueAt: parseDueAt(scored.actionTitle, new Date(), { relativeOnly: true }),
+      recallScore: scored.score,
+      confidence: scored.score,
+      observationId: o.id,
+      snippet: (o.text ?? scored.snippet).slice(0, 900),
+      ocrText: o.text ?? undefined,
+      source: "chat",
+      category: "follow_up",
+      tags: ["chat", appName.toLowerCase()],
+      fromMe: scored.fromMe,
+    });
   }
 
-  // Prefer items, then higher recall
+  // OCR is memory, not a loop source. Chat/docs "Continue:" cards were noise.
+
+  // Prefer items, then chat, then higher recall
   out.sort((a, b) => {
-    const srcRank = (s?: string) => (s === "item" ? 0 : 1);
+    const srcRank = (s?: string) =>
+      s === "item" ? 0 : s === "chat" ? 1 : 2;
     const d = srcRank(a.source) - srcRank(b.source);
     if (d !== 0) return d;
     return b.recallScore - a.recallScore;
@@ -414,6 +384,7 @@ async function structureCandidates(
   }));
 
   const userRules = formatUserRulesForPrompt(40);
+  const evalHints = evalFewShotForPrompt();
 
   const prompt = `STRUCTURE_LOOPS
 You extract open loops — unfinished commitments the user should ACT on.
@@ -435,9 +406,13 @@ Rules:
 - Drop anything matching USER_RULES below — keep:false.
 - Drop noise with no clear human action (keep:false).
 - Never emit two loops for the same email thread, sender+topic, or billing notice.
+- Chat OCR: keep:true only if the visible messages contain a real ask, commitment, time, or unfinished task (send/confirm/call/meet/deadline). Idle chat (ok, lol, thanks, stickers, "Type a message") → keep:false. Title must name the person AND the topic from the messages. Never keep a chat loop from a contact name alone. Never send.
 
 USER_RULES (do not track / never surface):
 ${userRules}
+
+SELF_EVAL_CORRECTIONS (recent misses — do not repeat):
+${evalHints}
 
 Candidates:
 ${JSON.stringify(payload, null, 0)}
@@ -447,6 +422,7 @@ ${JSON.stringify(payload, null, 0)}
     prompt,
     model: "fast",
     purpose: "structure_loops",
+    skipHosted: true,
   });
   const parsed = parseJsonFromText<{
     loops: Array<StructuredLoop & { i: number }>;
@@ -805,37 +781,54 @@ export async function detectOpenLoops(
 
   // All recall-pass candidates — no L1 accept bypass
   const recalled = candidates.filter((c) => c.recallScore >= RECALL_THRESHOLD);
+  const itemCands = recalled.filter((c) => c.source !== "chat");
 
   const budget = getLoopLlmBudget();
   const slots = Math.min(budget.maxPerRun, budget.remainingToday);
   const canLlm = slots > 0;
 
-  let structured: Array<LoopCandidate & { structured?: StructuredLoop }>;
+  let chatCands = recalled.filter((c) => c.source === "chat");
+  if (canLlm && chatCands.length > 0) {
+    chatCands = await polishChatCandidates(chatCands);
+  }
+  chatCands = chatCands.filter((c) => c.keep !== false);
+
+  const chatSelf = chatCands.filter((c) => c.fromMe);
+  const chatOther = chatCands.filter((c) => !c.fromMe);
+
+  let structured: Array<LoopCandidate & { structured?: StructuredLoop }> =
+    chatSelf.map((c) => asAccepted(c, true));
 
   if (canLlm) {
-    const forLlm = recalled.slice(0, slots);
-    if (recalled.length > forLlm.length) {
+    const queued = [...chatOther, ...itemCands];
+    const forLlm = queued.slice(0, slots);
+    if (queued.length > forLlm.length) {
       log.info("Loop LLM capped candidates", {
-        recalled: recalled.length,
+        recalled: queued.length,
         sent: forLlm.length,
+        chat: chatOther.length,
         maxPerRun: budget.maxPerRun,
         remainingToday: budget.remainingToday,
       });
     }
-    structured = await structureCandidates(forLlm);
+    structured.push(...(await structureCandidates(forLlm)));
 
-    // Overflow beyond the LLM budget is dropped — nothing is kept unverified
-    const overflow = recalled.slice(forLlm.length);
+    const overflow = queued.slice(forLlm.length);
     for (const c of overflow) {
-      structured.push(asAccepted(c, false));
+      structured.push(
+        asAccepted(c, c.source === "chat" && c.recallScore >= 0.75),
+      );
     }
   } else {
-    log.info("Loop LLM budget exhausted — skipping unverified candidates", {
+    log.info("Loop LLM budget exhausted — heuristic chat only", {
       recalled: recalled.length,
       usedToday: budget.usedToday,
       maxPerDay: budget.maxPerDay,
     });
-    structured = recalled.map((c) => asAccepted(c, false));
+    structured.push(
+      ...chatOther.map((c) => asAccepted(c, c.recallScore >= 0.75)),
+      ...itemCands.map((c) => asAccepted(c, false)),
+    );
   }
 
   const db = getDb();
@@ -857,6 +850,14 @@ export async function detectOpenLoops(
         author: l.who,
         kind: l.kind,
       };
+      let tags: string[] = [];
+      try {
+        const parsed = JSON.parse(l.tagsJson || "[]") as unknown;
+        if (Array.isArray(parsed)) tags = parsed.map(String);
+      } catch {
+        /* */
+      }
+      if (tags.some((t) => t.toLowerCase() === "chat")) continue;
       const userHit = isBlockedByUserRules(input);
       if (userHit) {
         db.update(openLoops)
@@ -910,19 +911,36 @@ export async function detectOpenLoops(
         .from(openLoops)
         .where(eq(openLoops.id, existingId))
         .get();
+      const garbageTitle = /["']{2,}|N"\s*v"|bi["']|tonwrrow|to you by/i.test(
+        existing?.title ?? "",
+      );
       const nextTitle =
-        existing && isGenericTitle(existing.title) && !isGenericTitle(title)
+        c.source === "chat"
           ? title
-          : existing?.title ?? title;
+          : existing && isGenericTitle(existing.title) && !isGenericTitle(title)
+            ? title
+            : garbageTitle
+              ? title
+              : existing?.title ?? title;
+      const nextDue =
+        c.source === "chat"
+          ? (c.dueAt ?? existing?.dueAt ?? null)
+          : existing?.dueAt ?? null;
       db.update(openLoops)
         .set({
           lastSeenAt: now,
           confidence: Math.max(c.confidence, 0.4),
           updatedAt: now,
           title: nextTitle,
+          description:
+            c.source === "chat" || garbageTitle
+              ? (c.description ?? existing?.description ?? null)
+              : (existing?.description ?? c.description ?? null),
           category: c.category ?? existing?.category ?? "other",
           tagsJson: JSON.stringify(c.tags ?? []),
           who: c.who ?? existing?.who ?? null,
+          dueAt: nextDue,
+          dueHint: c.dueHint ?? existing?.dueHint ?? nextDue,
         })
         .where(eq(openLoops.id, existingId))
         .run();
@@ -943,10 +961,14 @@ export async function detectOpenLoops(
     }
 
     const dueAt =
-      c.dueAt ??
-      (c.dueHint && !Number.isNaN(Date.parse(c.dueHint))
-        ? new Date(c.dueHint).toISOString()
-        : parseDueAt(c.snippet));
+      c.source === "chat"
+        ? (c.dueAt ??
+          parseDueHint(c.dueHint ?? "") ??
+          parseDueAt(c.title))
+        : (c.dueAt ??
+          (c.dueHint && !Number.isNaN(Date.parse(c.dueHint))
+            ? new Date(c.dueHint).toISOString()
+            : parseDueAt(c.snippet)));
     const priority = computePriority({
       dueAt,
       kind: c.kind,
@@ -1033,33 +1055,13 @@ export async function autoCloseLoops(): Promise<{ closed: number }> {
   const now = new Date().toISOString();
 
   const closePatterns =
-    /\b(done|merged|shipped|sent|resolved|closed|completed|fixed|replied|no longer needed|position closed|flattened|tp hit|sl hit|stopped out)\b/i;
+    /\b(done|merged|shipped|sent|resolved|closed|completed|fixed|replied|no longer needed)\b/i;
 
   for (const loop of open) {
     let closingItemId: string | undefined;
     let closingObsId: string | undefined;
     let closeReason = "auto_evidence";
     let note = "";
-
-    const isTradeLoop =
-      /\b(tp\/?sl|take[- ]?profit|stop[- ]?loss|open (trade|position)|set tp)\b/i.test(
-        `${loop.title} ${loop.description ?? ""}`,
-      ) ||
-      (!!loop.who &&
-        /^[A-Z]{2,6}$/.test(loop.who) &&
-        /\b(set|review|tp|sl|position)\b/i.test(loop.title));
-
-    // Trade loops: look for exit evidence on screen
-    if (isTradeLoop) {
-      for (const o of recentObs) {
-        if (tradingExitEvidence(o.text ?? "", loop.who)) {
-          closingObsId = o.id;
-          closeReason = "auto_trade_exit";
-          note = `Trade update: ${o.windowTitle ?? o.app}`;
-          break;
-        }
-      }
-    }
 
     // Evidence path: token overlap >= 3 with recent items / observations
     if (!closingObsId) {

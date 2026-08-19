@@ -1,0 +1,11 @@
+{
+  "id": "chat-009",
+  "source": "chat",
+  "label": "is_loop",
+  "expectedTitleContains": "payment",
+  "input": {
+    "app": "WhatsApp.Root",
+    "windowTitle": "WhatsApp",
+    "text": "HEADER: Yeh bhi kr liya You\n31/07/2026 Send the bi\" by tomorrow 9:29 N\" v\"\nI will send the paymen to you tornorrow"
+  }
+}

@@ -4,7 +4,7 @@
   "label": "is_loop",
   "input": {
     "kind": "pr",
-    "title": "feat: trading TP/SL coach",
+    "title": "feat: add loop dedupe",
     "body": "Looking for a second pair of eyes before we ship.",
     "author": "teammate"
   }

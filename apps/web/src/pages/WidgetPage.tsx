@@ -13,7 +13,8 @@ type Filter =
   | "gmail"
   | "github"
   | "pc"
-  | "manual";
+  | "manual"
+  | "chat";
 
 type SourceFilter = Exclude<
   Filter,
@@ -54,9 +55,22 @@ function sourceMeta(loop: OpenLoop): {
   badge: string;
   color: string;
 } {
-  const blob = `${loop.title} ${loop.description ?? ""} ${loop.origin} ${loop.who ?? ""} ${loop.sourceKind ?? ""} ${loop.sourceLabel ?? ""}`.toLowerCase();
+  const blob = `${loop.title} ${loop.description ?? ""} ${loop.origin} ${loop.who ?? ""} ${loop.sourceKind ?? ""} ${loop.sourceLabel ?? ""} ${(loop.tags ?? []).join(" ")}`.toLowerCase();
   const url = (loop.sourceUrl ?? "").toLowerCase();
   const kind = (loop.sourceKind ?? "").toLowerCase();
+  if (
+    kind === "chat" ||
+    (loop.tags ?? []).some((t) => t.toLowerCase() === "chat") ||
+    /\bwhatsapp\b|\btelegram\b|\bfollow up with .+ on (whatsapp|telegram|slack|discord|signal|teams)\b/.test(
+      blob,
+    )
+  )
+    return {
+      label: loop.who || loop.sourceLabel || "Chat",
+      filter: "chat",
+      badge: /telegram/.test(blob) ? "TG" : /whatsapp/.test(blob) ? "WA" : "CH",
+      color: "bg-emerald-600 text-white",
+    };
   if (
     kind === "pr" ||
     kind === "issue" ||
@@ -470,6 +484,7 @@ export function WidgetPage() {
       urgent: 0,
       gmail: 0,
       github: 0,
+      chat: 0,
       pc: 0,
       manual: 0,
     };
@@ -717,6 +732,7 @@ export function WidgetPage() {
       options: [
         { id: "gmail", title: "Gmail", count: sourceCounts.gmail, tone: "bg-red-500 text-white" },
         { id: "github", title: "GitHub", count: sourceCounts.github, tone: "bg-zinc-900 text-white" },
+        { id: "chat", title: "Chats", count: sourceCounts.chat, tone: "bg-emerald-600 text-white" },
         { id: "pc", title: "PC", count: sourceCounts.pc, tone: "bg-indigo-500 text-white" },
         { id: "manual", title: "Manual", count: sourceCounts.manual, tone: "bg-zinc-200 text-zinc-700" },
         { id: "all", title: "All open", count: open.length },

@@ -2,9 +2,8 @@
  * Pure fixture scorer — mirrors collectLoopCandidates heuristics without DB.
  */
 import {
-  scoreTradingAction,
-  isTradingSurface,
   classifyMailLoop,
+  scoreChatAction,
 } from "@second-brain/agents";
 
 /** Copied from packages/agents/src/loops.ts */
@@ -18,7 +17,7 @@ const PROMO_RE =
 const BOT_AUTHOR_RE =
   /\[?(dependabot|renovate|github-actions|codecov|sonarcloud)\]?/i;
 
-export type FixtureSource = "email" | "github" | "trading" | "ocr";
+export type FixtureSource = "email" | "github" | "ocr" | "chat";
 export type FixtureLabel = "is_loop" | "not_loop";
 
 export type EvalFixture = {
@@ -86,33 +85,29 @@ function scoreItemHeuristic(input: EvalFixture["input"]): ScoreResult {
   };
 }
 
+function scoreChat(input: EvalFixture["input"]): ScoreResult {
+  const hit = scoreChatAction({
+    windowTitle: input.windowTitle ?? input.title,
+    app: input.app,
+    url: input.url,
+    text: input.text ?? input.body,
+  });
+  if (!hit) return { predicted: false, confidence: 0 };
+  return {
+    predicted: true,
+    confidence: Math.min(0.95, hit.score),
+    title: hit.actionTitle,
+  };
+}
+
 /**
  * Score one fixture the same way L1 loop detection would (no LLM, no DB).
  */
 export function scoreFixture(fixture: EvalFixture): ScoreResult {
   const { source, input } = fixture;
-  const surface = {
-    app: input.app,
-    windowTitle: input.windowTitle,
-    url: input.url,
-    text: input.text ?? input.body ?? "",
-  };
 
-  if (source === "trading" || (source === "ocr" && isTradingSurface(surface))) {
-    const hit = scoreTradingAction({
-      ...surface,
-      text: surface.text,
-    });
-    if (hit) {
-      return {
-        predicted: true,
-        confidence: Math.min(0.95, hit.score),
-        title: hit.actionTitle,
-      };
-    }
-    if (source === "trading") {
-      return { predicted: false, confidence: 0 };
-    }
+  if (source === "chat") {
+    return scoreChat(input);
   }
 
   if (source === "email" || source === "github") {
@@ -128,7 +123,7 @@ export function scoreFixture(fixture: EvalFixture): ScoreResult {
     });
   }
 
-  // Generic OCR: not a loop source (memory / timeline only)
+  // Generic OCR: memory / timeline only — never a loop source
   if (source === "ocr") {
     return { predicted: false, confidence: 0 };
   }

@@ -37,7 +37,11 @@ export function getLoopLlmBudget(): {
       if (e.kind !== "ollama" && e.kind !== "loop-structure") return false;
       try {
         const meta = JSON.parse(e.metaJson || "{}") as { purpose?: string };
-        return meta.purpose === "structure_loops" || e.kind === "loop-structure";
+        return (
+          meta.purpose === "structure_loops" ||
+          meta.purpose === "polish_chat" ||
+          e.kind === "loop-structure"
+        );
       } catch {
         return false;
       }

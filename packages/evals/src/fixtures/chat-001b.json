@@ -1,0 +1,11 @@
+{
+  "id": "chat-001b",
+  "source": "chat",
+  "label": "is_loop",
+  "expectedTitleContains": "Farhan",
+  "input": {
+    "app": "WhatsApp",
+    "windowTitle": "Farhan - WhatsApp",
+    "text": "Farhan\ncan you send the deck tonight?\nType a message"
+  }
+}

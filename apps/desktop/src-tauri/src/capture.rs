@@ -247,7 +247,6 @@ impl CaptureEngine {
         }
         if emit && !exe_l.contains("second-brain") {
             let chat = is_chat_surface(&app, &exe, &title);
-            let trading = is_trading_surface(&app, &exe, &title, "");
             self.append_obs(json!({
                 "ts": Utc::now().to_rfc3339(),
                 "source": "window",
@@ -256,9 +255,11 @@ impl CaptureEngine {
                 "window_title": title,
                 "dwell_ms": dwell_ms,
                 "redacted": false,
-                "chat": chat,
-                "trading": trading
+                "chat": chat
             }));
+            if chat {
+                self.wake_core_loops();
+            }
         }
     }
 
@@ -304,6 +305,8 @@ impl CaptureEngine {
                             if blocked {
                                 continue;
                             }
+                            let chat = is_chat_surface(browser, "", &title)
+                                || is_chat_url(&url);
                             self.append_obs(json!({
                                 "ts": chrome_time_to_rfc3339(vt),
                                 "source": "browser",
@@ -312,7 +315,8 @@ impl CaptureEngine {
                                 "url": url,
                                 "domain": domain,
                                 "dwell_ms": 0,
-                                "redacted": false
+                                "redacted": false,
+                                "chat": chat
                             }));
                         }
                     }
@@ -354,18 +358,18 @@ impl CaptureEngine {
                 }
             };
             let chat = is_chat_surface(&app, &exe, &title);
-            let trading = is_trading_surface(&app, &exe, &title, "");
+            let skip_desk = is_skip_ocr_desk(&app, &exe, &title, "");
             let exe_l = exe.to_lowercase();
             let title_l = title.to_lowercase();
             let focus_key = format!("{exe}|{title}");
-            if chat || trading || title_l.contains("incognito") || title_l.contains("inprivate")
+            if skip_desk || title_l.contains("incognito") || title_l.contains("inprivate")
             {
                 let mut s = self.shared.lock();
                 s.last_ocr_at = std::time::Instant::now();
                 s.last_ocr_focus_key = focus_key;
                 return;
             }
-            let interval = Duration::from_secs(8);
+            let interval = Duration::from_secs(if chat { 5 } else { 8 });
             let should = {
                 let s = self.shared.lock();
                 s.last_ocr_at.elapsed() > interval
@@ -388,7 +392,7 @@ impl CaptureEngine {
                 }
             }
 
-            if let Some((text, phash, windowed)) = capture_target_ocr(target_pid, &title) {
+            if let Some((text, phash, windowed)) = capture_target_ocr(target_pid, &title, chat) {
                 let text = {
                     let s = self.shared.lock();
                     filter_blocked_ocr_text(&text, &s.block_domains)
@@ -417,11 +421,13 @@ impl CaptureEngine {
                     "text": clipped,
                     "dwell_ms": 0,
                     "redacted": false,
-                    "chat": false,
-                    "trading": false,
+                    "chat": chat,
                     "fullscreen": !windowed,
                     "window_ocr": windowed
                 }));
+                if chat {
+                    self.wake_core_loops();
+                }
             } else {
                 let mut s = self.shared.lock();
                 s.last_ocr_at = std::time::Instant::now();
@@ -441,7 +447,6 @@ impl CaptureEngine {
     }
 
     /// Ask local core to ingest spool + detect loops ASAP (debounced).
-    #[allow(dead_code)]
     fn wake_core_loops(&self) {
         {
             let mut s = self.shared.lock();
@@ -740,7 +745,16 @@ fn is_chat_surface(app: &str, exe: &str, title: &str) -> bool {
     .any(|k| blob.contains(k))
 }
 
-fn is_trading_surface(app: &str, exe: &str, title: &str, text: &str) -> bool {
+fn is_chat_url(url: &str) -> bool {
+    let u = url.to_lowercase();
+    u.contains("whatsapp.com")
+        || u.contains("web.telegram")
+        || u.contains("t.me/")
+        || u.contains("web.whatsapp")
+}
+
+/// Skip OCR on desks we never want as product (brokers, charts). Not a feature.
+fn is_skip_ocr_desk(app: &str, exe: &str, title: &str, text: &str) -> bool {
     let blob = format!("{app} {exe} {title}").to_lowercase();
     // Messaging titles like "Trench - Raj" are chat, not a trading desk
     let chat = [
@@ -867,11 +881,12 @@ fn foreground_pid() -> Option<u32> {
     }
 }
 
-/// OCR the focused (or last-user) window only. Never hunt chat apps or
-/// fall back to a fullscreen grab (that can include password vaults).
+/// OCR the focused (or last-user) window only. Never fall back to a
+/// fullscreen grab (that can include password vaults). Chat threads are
+/// OCR'd so we can tell an ask from idle chat; bitmaps are not saved.
 #[cfg(windows)]
-fn capture_target_ocr(pid: u32, title: &str) -> Option<(String, u64, bool)> {
-    if let Some((text, phash)) = capture_window_ocr(pid, title) {
+fn capture_target_ocr(pid: u32, title: &str, crop_thread: bool) -> Option<(String, u64, bool)> {
+    if let Some((text, phash)) = capture_window_ocr(pid, title, crop_thread) {
         if text.trim().len() >= 12 {
             return Some((text, phash, true));
         }
@@ -880,7 +895,7 @@ fn capture_target_ocr(pid: u32, title: &str) -> Option<(String, u64, bool)> {
 }
 
 #[cfg(windows)]
-fn capture_window_ocr(pid: u32, title: &str) -> Option<(String, u64)> {
+fn capture_window_ocr(pid: u32, title: &str, crop_thread: bool) -> Option<(String, u64)> {
     use xcap::Window;
     if pid == 0 {
         return None;
@@ -917,10 +932,111 @@ fn capture_window_ocr(pid: u32, title: &str) -> Option<(String, u64)> {
     };
     let width = img.width();
     let height = img.height();
-    let rgba = img.into_raw();
-    let phash = phash_from_rgb(width, height, &rgba);
-    let text = win_ocr_rgba(width, height, &rgba)?;
+    let orig = img.into_raw();
+    let mut rgba = orig.clone();
+    let mut w = width;
+    let mut h = height;
+    // WhatsApp / Telegram desktop: skip the chat list, OCR the open thread.
+    if crop_thread && w >= 700 {
+        let cut = (w as f32 * 0.34) as u32;
+        if let Some((cw, ch, cropped)) = crop_rgba_right(w, h, &rgba, cut) {
+            w = cw;
+            h = ch;
+            rgba = cropped;
+        }
+    }
+    let phash = phash_from_rgb(w, h, &rgba);
+    let body = win_ocr_rgba(w, h, &rgba)?;
+    let text = if crop_thread {
+        if let Some(header) = ocr_chat_header(width, height, &orig) {
+            format!("HEADER: {header}\n{body}")
+        } else {
+            body
+        }
+    } else {
+        body
+    };
     Some((text, phash))
+}
+
+/// Thread title bar: milder left cut than the body so the name isn't sliced off.
+#[cfg(windows)]
+fn ocr_chat_header(width: u32, height: u32, rgba: &[u8]) -> Option<String> {
+    if height < 180 || width < 400 {
+        return None;
+    }
+    let cut = (width as f32 * 0.22) as u32;
+    let (cw, ch, thread) = crop_rgba_right(width, height, rgba, cut)?;
+    let header_h = ((ch as f32) * 0.12).clamp(80.0, 130.0) as u32;
+    let (hw, hh, head) = crop_rgba_top(cw, ch, &thread, header_h)?;
+    let keep = ((hw as f32) * 0.78) as u32;
+    let (nw, nh, name_bar) = crop_rgba_keep_left(hw, hh, &head, keep)?;
+    let header = win_ocr_rgba(nw, nh, &name_bar)?;
+    let header = header.replace('\n', " ").trim().to_string();
+    if header.len() < 2 {
+        return None;
+    }
+    Some(header)
+}
+
+/// Keep the top `keep_h` rows (chat name bar).
+fn crop_rgba_top(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    keep_h: u32,
+) -> Option<(u32, u32, Vec<u8>)> {
+    if keep_h < 24 || keep_h >= height {
+        return None;
+    }
+    let stride = (width * 4) as usize;
+    let bytes = stride * keep_h as usize;
+    if rgba.len() < bytes {
+        return None;
+    }
+    Some((width, keep_h, rgba[..bytes].to_vec()))
+}
+
+/// Keep the left `keep_w` columns (drop call-button icons on the right).
+fn crop_rgba_keep_left(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    keep_w: u32,
+) -> Option<(u32, u32, Vec<u8>)> {
+    if keep_w < 80 || keep_w >= width {
+        return None;
+    }
+    let src_stride = (width * 4) as usize;
+    let row_bytes = (keep_w * 4) as usize;
+    let mut out = Vec::with_capacity(row_bytes * height as usize);
+    for y in 0..height as usize {
+        let start = y * src_stride;
+        out.extend_from_slice(&rgba[start..start + row_bytes]);
+    }
+    Some((keep_w, height, out))
+}
+
+/// Drop the left `cut_x` columns (chat list). RGBA, 4 bytes/pixel.
+fn crop_rgba_right(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    cut_x: u32,
+) -> Option<(u32, u32, Vec<u8>)> {
+    if cut_x == 0 || cut_x >= width.saturating_sub(200) {
+        return None;
+    }
+    let new_w = width - cut_x;
+    let mut out = Vec::with_capacity((new_w * height * 4) as usize);
+    let src_stride = (width * 4) as usize;
+    let dst_off = (cut_x * 4) as usize;
+    let row_bytes = (new_w * 4) as usize;
+    for y in 0..height as usize {
+        let start = y * src_stride + dst_off;
+        out.extend_from_slice(&rgba[start..start + row_bytes]);
+    }
+    Some((new_w, height, out))
 }
 
 /// Capture every monitor (full desktop), OCR each, concatenate text.
@@ -975,6 +1091,32 @@ fn win_ocr_rgba(width: u32, height: u32, rgba: &[u8]) -> Option<String> {
 
     let mut img: ImageBuffer<Rgba<u8>, Vec<u8>> =
         ImageBuffer::from_raw(width, height, rgba.to_vec())?;
+
+    // Dark WhatsApp/Telegram: invert so WinOCR sees black text on a light field.
+    let raw = img.as_raw();
+    let mut sum: u64 = 0;
+    let mut n: u64 = 0;
+    let mut i = 0usize;
+    while i + 2 < raw.len() {
+        sum += u64::from(raw[i]) + u64::from(raw[i + 1]) + u64::from(raw[i + 2]);
+        n += 1;
+        i += 32; // every 8th pixel
+    }
+    if n > 0 && (sum / (n * 3)) < 110 {
+        for p in img.pixels_mut() {
+            p[0] = 255 - p[0];
+            p[1] = 255 - p[1];
+            p[2] = 255 - p[2];
+        }
+    }
+
+    // Thin header strips fail OCR; blow them up first.
+    if img.height() < 160 {
+        let scale = (160.0 / img.height() as f32).clamp(1.5, 3.0);
+        let nw = ((img.width() as f32) * scale).round().max(1.0) as u32;
+        let nh = ((img.height() as f32) * scale).round().max(1.0) as u32;
+        img = image::imageops::resize(&img, nw, nh, FilterType::CatmullRom);
+    }
 
     // Keep chat bubbles readable; avoid crushing to tiny bitmaps
     let max_w = 1800u32;

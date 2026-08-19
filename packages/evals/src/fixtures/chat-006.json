@@ -1,0 +1,9 @@
+{
+  "id": "chat-006",
+  "source": "chat",
+  "label": "not_loop",
+  "input": {
+    "app": "Telegram",
+    "windowTitle": "Telegram Desktop"
+  }
+}

@@ -439,12 +439,10 @@ export async function ingestSpool(): Promise<CaptureResult> {
 
       const text = obs.text ?? obs.window_title ?? obs.url ?? "";
       const surfaceBlob = `${obs.app ?? ""} ${obs.exe ?? ""} ${obs.window_title ?? ""} ${obs.url ?? ""}`;
-      // Chat apps are out of scope — never ingest their screen content.
       const chat =
         obs.chat === true ||
         /whatsapp|slack|discord|telegram|teams|signal/i.test(surfaceBlob);
-      if (chat) continue;
-      const trading =
+      const tradingDesk =
         obs.trading === true ||
         /trench|tradingview|binance|bybit|hyperliquid|robinhood|webull|okx|coinbase pro|ibkr/i.test(
           surfaceBlob,
@@ -453,21 +451,33 @@ export async function ingestSpool(): Promise<CaptureResult> {
           text,
         ) &&
           /\b(long|short|positions?|ondo|ticker)\b/i.test(text));
-      // Trading desks are opt-in — skip so TP/SL OCR cannot become tasks.
-      if (trading) continue;
+      if (tradingDesk && !chat) continue;
       if (
+        !chat &&
         /\b(tp\/?sl|take[- _]?profit|stop[- _]?loss|set_stop_loss|set tp)\b/i.test(
           `${text} ${surfaceBlob}`,
         )
       ) {
         continue;
       }
+      if (chat) {
+        const title = (obs.window_title ?? "").trim();
+        const genericChrome =
+          /^(whatsapp|telegram|telegram desktop|chats?|status|archived|settings)$/i.test(
+            title,
+          );
+        // Native WhatsApp.Root titles the OS window "WhatsApp" — keep OCR of the thread.
+        if (genericChrome && obs.source !== "ocr") continue;
+        if (genericChrome && obs.source === "ocr" && text.trim().length < 12) {
+          continue;
+        }
+      }
       if (
         isSpam({
           title: obs.window_title,
-          body: text,
+          body: chat ? text.slice(0, 400) : text,
           url: obs.url,
-          kind: obs.source,
+          kind: chat ? "chat" : obs.source,
         })
       ) {
         continue;
@@ -485,11 +495,17 @@ export async function ingestSpool(): Promise<CaptureResult> {
       seenHashes.add(hash);
 
       let artifactId: string | null = null;
-      const ak = artifactKey(obs);
-      if (ak) {
-        artifactId = touchArtifact(ak.kind, ak.key, ak.title, obs.ts);
-        artCount++;
+      if (!chat) {
+        const ak = artifactKey(obs);
+        if (ak) {
+          artifactId = touchArtifact(ak.kind, ak.key, ak.title, obs.ts);
+          artCount++;
+        }
       }
+
+      const storeText = chat
+        ? (obs.source === "ocr" ? text.slice(0, 2500) : obs.window_title) || null
+        : text || null;
 
       const id = newId();
       db.insert(observations)
@@ -502,7 +518,7 @@ export async function ingestSpool(): Promise<CaptureResult> {
           windowTitle: obs.window_title ?? null,
           url: obs.url ?? null,
           domain: obs.domain ?? domainFromUrl(obs.url),
-          text: text || null,
+          text: storeText,
           textHash: hash,
           dwellMs: obs.dwell_ms ?? 0,
           redacted: obs.redacted ?? false,
@@ -510,20 +526,21 @@ export async function ingestSpool(): Promise<CaptureResult> {
           metaJson: JSON.stringify({
             ...(obs.meta ?? {}),
             ...(chat ? { chat: true } : {}),
-            ...(trading ? { trading: true } : {}),
           }),
         })
         .run();
 
-      insertMemoryChunk({
-        kind: "observation",
-        refId: id,
-        text: [obs.app, obs.window_title, obs.url, text]
-          .filter(Boolean)
-          .join("\n"),
-        ts: obs.ts,
-        dwellMs: obs.dwell_ms ?? 0,
-      });
+      if (!chat) {
+        insertMemoryChunk({
+          kind: "observation",
+          refId: id,
+          text: [obs.app, obs.window_title, obs.url, text]
+            .filter(Boolean)
+            .join("\n"),
+          ts: obs.ts,
+          dwellMs: obs.dwell_ms ?? 0,
+        });
+      }
       inserted++;
     }
   }

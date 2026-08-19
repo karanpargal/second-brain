@@ -6,7 +6,7 @@
 const EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
 
 const NOISE_RE =
-  /\b(google search|bing search|youtube|gmail|mail\.google|outlook\.live|x\.com|twitter\.com|facebook|instagram|tiktok|reddit\.com|spotify|claim your|one[- ]time pack|unsubscribe)\b/i;
+  /\b(google search|bing search|youtube|gmail|mail\.google|outlook\.live|x\.com|twitter\.com|facebook|instagram|tiktok|reddit\.com|spotify|whatsapp|telegram|discord|slack|signal|claim your|one[- ]time pack|unsubscribe)\b/i;
 
 const SEARCH_HOST_RE =
   /(google\.com\/search|bing\.com\/search|duckduckgo\.com|search\.yahoo)/i;

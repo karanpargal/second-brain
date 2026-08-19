@@ -207,17 +207,6 @@ export function seed(): void {
       .run();
   }
 
-  const tradingInterest = db
-    .select()
-    .from(settings)
-    .where(eq(settings.key, "interests.trading"))
-    .get();
-  if (!tradingInterest) {
-    db.insert(settings)
-      .values({ key: "interests.trading", valueJson: "false" })
-      .run();
-  }
-
   const profile = db
     .select()
     .from(userProfiles)

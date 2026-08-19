@@ -6,6 +6,8 @@ import {
   type EvalFixture,
   type FixtureSource,
 } from "./score-fixture.js";
+import { evaluateAiGoldens, type AiEvalReport } from "./ai-eval.js";
+import { saveEvalLearn, type EvalLearnMiss } from "@second-brain/agents";
 
 export type Metrics = {
   tp: number;
@@ -69,7 +71,7 @@ export async function loadFixtures(dir?: string): Promise<EvalFixture[]> {
     dir ??
     path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
   const names = (await readdir(base))
-    .filter((n) => n.endsWith(".json"))
+    .filter((n) => n.endsWith(".json") && !n.startsWith("trading-"))
     .sort();
   const out: EvalFixture[] = [];
   for (const name of names) {
@@ -134,12 +136,22 @@ function syntheticFixtures(count: number, startIdx: number): EvalFixture[] {
       },
     },
     {
-      source: "trading",
+      source: "chat",
       label: "is_loop",
+      expectedTitleContains: "Priya",
       input: {
-        app: "Binance",
-        windowTitle: "Binance",
-        text: "Unrealized PnL -12% Open Long BTC missing TP/SL",
+        app: "WhatsApp",
+        windowTitle: "Priya - WhatsApp",
+        text: "can you send the notes tonight?",
+      },
+    },
+    {
+      source: "chat",
+      label: "not_loop",
+      input: {
+        app: "WhatsApp",
+        windowTitle: "Priya - WhatsApp",
+        text: "ok lol haha thanks",
       },
     },
   ];
@@ -155,6 +167,7 @@ function syntheticFixtures(count: number, startIdx: number): EvalFixture[] {
       id: `syn-${String(startIdx + i).padStart(3, "0")}`,
       source: t.source,
       label: t.label,
+      expectedTitleContains: t.expectedTitleContains,
       input: {
         ...t.input,
         text: text ?? t.input.text,
@@ -238,15 +251,56 @@ export function formatMarkdownTable(report: EvalReport): string {
 
 const F1_GATE = 0.5;
 
-async function main() {
+export type FullEvalResult = {
+  heuristic: EvalReport;
+  ai: AiEvalReport;
+  fixtureCount: number;
+};
+
+export async function runFullEval(opts?: {
+  persist?: boolean;
+}): Promise<FullEvalResult> {
   const fixtures = await loadFixtures();
-  const report = evaluateFixtures(fixtures);
-  console.log(`# Loop detector eval (${fixtures.length} fixtures)\n`);
-  console.log(formatMarkdownTable(report));
+  const heuristic = evaluateFixtures(fixtures);
+  const ai = await evaluateAiGoldens();
+
+  if (opts?.persist) {
+    const misses: EvalLearnMiss[] = [
+      ...heuristic.rows
+        .filter((r) => !r.ok)
+        .slice(0, 12)
+        .map((r) => ({
+          id: r.id,
+          note: `${r.source} label=${r.label} pred=${r.predicted}${r.title ? ` title="${r.title}"` : ""}`,
+        })),
+      ...ai.misses,
+    ];
+    try {
+      saveEvalLearn({
+        at: new Date().toISOString(),
+        heuristicF1: heuristic.overall.f1,
+        heuristicN: fixtures.length,
+        aiSkipped: ai.skipped,
+        aiF1: ai.skipped ? undefined : ai.f1,
+        aiN: ai.skipped ? undefined : ai.n,
+        misses,
+      });
+    } catch {
+      /* no local DB in some CLI runs */
+    }
+  }
+
+  return { heuristic, ai, fixtureCount: fixtures.length };
+}
+
+async function main() {
+  const { heuristic, ai, fixtureCount } = await runFullEval({ persist: true });
+  console.log(`# Loop detector eval (${fixtureCount} fixtures)\n`);
+  console.log(formatMarkdownTable(heuristic));
   console.log("");
-  const misses = report.rows.filter((r) => !r.ok);
+  const misses = heuristic.rows.filter((r) => !r.ok);
   if (misses.length) {
-    console.log(`## Misses (${misses.length})`);
+    console.log(`## Heuristic misses (${misses.length})`);
     for (const m of misses.slice(0, 25)) {
       console.log(
         `- ${m.id} [${m.source}] label=${m.label} pred=${m.predicted} conf=${m.confidence.toFixed(2)}${m.title ? ` title="${m.title}"` : ""}`,
@@ -254,9 +308,23 @@ async function main() {
     }
     if (misses.length > 25) console.log(`- … ${misses.length - 25} more`);
   }
-  console.log(`\nF1 gate: ${F1_GATE} — actual ${report.overall.f1.toFixed(3)}`);
-  if (report.overall.f1 < F1_GATE) {
+  console.log(`\nHeuristic F1 gate: ${F1_GATE} — actual ${heuristic.overall.f1.toFixed(3)}`);
+  if (heuristic.overall.f1 < F1_GATE) {
     process.exitCode = 1;
+  }
+
+  if (ai.skipped) {
+    console.log(`\nAI STRUCTURE_LOOPS: skipped (${ai.reason ?? "no local Ollama"})`);
+  } else {
+    console.log(
+      `\nAI STRUCTURE_LOOPS: N=${ai.n} ok=${ai.ok} F1=${ai.f1.toFixed(3)} TP=${ai.tp} FP=${ai.fp} FN=${ai.fn}`,
+    );
+    if (ai.misses.length) {
+      console.log("## AI misses");
+      for (const m of ai.misses) {
+        console.log(`- ${m.id}: ${m.note}`);
+      }
+    }
   }
 }
 

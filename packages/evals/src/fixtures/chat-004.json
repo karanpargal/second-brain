@@ -1,0 +1,10 @@
+{
+  "id": "chat-004",
+  "source": "chat",
+  "label": "not_loop",
+  "input": {
+    "app": "WhatsApp",
+    "windowTitle": "(2) Mom - WhatsApp",
+    "text": "ok\nlol\nhaha\nthanks\nType a message"
+  }
+}

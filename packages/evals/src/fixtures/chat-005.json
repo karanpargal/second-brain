@@ -1,0 +1,12 @@
+{
+  "id": "chat-005",
+  "source": "chat",
+  "label": "is_loop",
+  "expectedTitleContains": "Priya",
+  "input": {
+    "app": "Google Chrome",
+    "windowTitle": "Priya",
+    "url": "https://web.whatsapp.com/",
+    "text": "Priya\ncan you share the invoice by Friday?\nType a message"
+  }
+}

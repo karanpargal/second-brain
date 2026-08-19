@@ -45,7 +45,6 @@ export {
   generateDigest,
   collectLoopCandidates,
   collapseDuplicateOpenLoops,
-  isTradingInterestEnabled,
   type LoopCandidate,
 } from "./loops.js";
 export {
@@ -69,16 +68,31 @@ export {
   type DedupeInput,
 } from "./loop-dedupe.js";
 export { getLoopLlmBudget, llmSlotsForThisRun } from "./loop-budget.js";
-export { parseDueAt } from "./due.js";
+export { parseDueAt, parseDueHint } from "./due.js";
+export {
+  polishChatCandidates,
+  applyChatPolish,
+  parseChatPolishResponse,
+  buildChatPolishPrompt,
+  chatDateContext,
+} from "./polish-chat.js";
 export { computePriority } from "./priority.js";
 export {
-  scoreTradingAction,
-  isTradingSurface,
-  guessTickers,
-  guessVenue,
-  tradingExitEvidence,
-  type TradingActionScore,
-} from "./trading-actions.js";
+  parseChatPeer,
+  detectChatApp,
+  isChatSurface,
+  chatFollowUpTitle,
+  scoreChatAction,
+  type ChatApp,
+  type ChatActionHit,
+} from "./chat-actions.js";
+export {
+  saveEvalLearn,
+  lastEvalLearn,
+  evalFewShotForPrompt,
+  type EvalLearnReport,
+  type EvalLearnMiss,
+} from "./eval-learn.js";
 export { askMemory, todayTimeline } from "./ask.js";
 export { bucketOpenLoops, isUrgentLoop, isTodayLoop } from "./buckets.js";
 export {

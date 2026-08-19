@@ -44,6 +44,7 @@ import {
   whatDidIDo,
   detectOpenLoops,
   extractFocusVoice,
+  lastEvalLearn,
 } from "@second-brain/agents";
 import {
   googleStatus,
@@ -259,14 +260,32 @@ async function handle(
     const g = await googleStatus();
     const gh = await githubStatus();
     const ollama = await ollamaStatus();
+    const lastEval = lastEvalLearn();
     const src = db.select().from(sources).all();
     const gmailErr = src.find((s) => s.id === "src-gmail")?.lastError ?? null;
     const githubErr = src.find((s) => s.id === "src-github")?.lastError ?? null;
     reply(200, {
       ok: true,
       dataDir: config.dataDir,
-      apiVersion: 7,
-      features: ["spam", "wake", "fast-loops", "api-auth", "improve-learn"],
+      apiVersion: 9,
+      features: [
+        "spam",
+        "wake",
+        "fast-loops",
+        "api-auth",
+        "improve-learn",
+        "chat-loops",
+        "chat-ocr",
+        "self-eval",
+      ],
+      eval: lastEval
+        ? {
+            at: lastEval.at,
+            heuristicF1: lastEval.heuristicF1,
+            aiF1: lastEval.aiF1 ?? null,
+            aiSkipped: lastEval.aiSkipped ?? false,
+          }
+        : null,
       google: {
         ...g,
         needsReauth: Boolean(

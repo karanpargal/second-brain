@@ -28,6 +28,7 @@ import {
   generateWeeklyInsights,
   listInsights,
 } from "@second-brain/agents";
+import { runFullEval } from "@second-brain/evals";
 import { startApiServer } from "./api.js";
 import { scheduleFastLoopDetect } from "./fast-loops.js";
 
@@ -125,6 +126,22 @@ export async function jobInsights(): Promise<JobResult> {
   });
 }
 
+export async function jobEval(): Promise<JobResult> {
+  return runJob("evals", async () => {
+    const r = await runFullEval({ persist: true });
+    return {
+      stats: {
+        heuristicF1: r.heuristic.overall.f1,
+        heuristicN: r.fixtureCount,
+        aiSkipped: r.ai.skipped,
+        aiF1: r.ai.skipped ? null : r.ai.f1,
+        aiN: r.ai.n,
+        aiMisses: r.ai.misses.length,
+      },
+    };
+  });
+}
+
 export async function catchUpOnBoot() {
   log.info("Catch-up on boot starting");
   await jobCapture().catch((e) =>
@@ -186,12 +203,17 @@ export function startScheduler() {
   safe("backup", () => jobBackup());
   safe("reminders", () => jobReminders());
   safe("insights", () => jobInsights());
+  safe("evals", () => jobEval());
 
   setTimeout(() => {
     catchUpOnBoot().catch((e) =>
       log.error("catch-up failed", { err: String(e) }),
     );
   }, 2000);
+
+  setTimeout(() => {
+    jobEval().catch((e) => log.error("eval on boot failed", { err: String(e) }));
+  }, 45_000);
 
   log.info("Worker scheduler running", {
     dataDir: config.dataDir,
@@ -258,6 +280,10 @@ export async function runCli(argv: string[]) {
       );
       break;
     }
+    case "eval":
+    case "evals":
+      await jobEval();
+      break;
     case "help":
     default:
       console.log(`second-brain CLI
@@ -273,6 +299,7 @@ Usage:
   brain plan                Daily plan
   brain purge               Retention purge
   brain backup              VACUUM INTO backup
+  brain eval                Heuristic + local Ollama eval (self-improve)
   brain auth google         OAuth (read-only)
   brain status
   brain seed
