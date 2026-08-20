@@ -101,4 +101,14 @@ I will send the paymen to you tornorrow`,
       }),
     ).toBeNull();
   });
+
+  it("drops market / trading tape in a chat window", () => {
+    expect(
+      scoreChatAction({
+        app: "Slack",
+        windowTitle: "pritesh (DM) - Covalent - Slack",
+        text: "Opened LONG xyz:GOLD Market $99.81 notional PnL -0.15 cross margin TP/SL",
+      }),
+    ).toBeNull();
+  });
 });

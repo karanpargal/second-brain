@@ -4,6 +4,8 @@
  * Contact names stay off Improve. Local LLM only (skipHosted).
  */
 
+import { looksLikeMarket } from "@second-brain/core";
+
 export type ChatApp =
   | "WhatsApp"
   | "Telegram"
@@ -269,6 +271,7 @@ export function scoreChatAction(input: {
   if (!chatApp) return null;
   const raw = (input.text ?? "").trim();
   if (raw.length < 12) return null;
+  if (looksLikeMarket(raw)) return null;
 
   const cleaned = stripChatChrome(raw);
   if (cleaned.length < 8) return null;

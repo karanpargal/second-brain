@@ -12,6 +12,7 @@ import {
   classifySpam,
   isBlockedByUserRules,
   formatUserRulesForPrompt,
+  linkLearnCard,
 } from "@second-brain/core";
 import { eq } from "drizzle-orm";
 import { runLlm, parseJsonFromText } from "./llm.js";
@@ -25,7 +26,7 @@ import {
 import { evalFewShotForPrompt } from "./eval-learn.js";
 import { getLoopLlmBudget } from "./loop-budget.js";
 import { parseDueAt, parseDueHint } from "./due.js";
-import { polishChatCandidates } from "./polish-chat.js";
+import { polishChatCandidates, applyChatPolish } from "./polish-chat.js";
 import { computePriority } from "./priority.js";
 import {
   loopsAreDuplicate,
@@ -69,6 +70,9 @@ export type LoopCandidate = {
   ocrText?: string;
   /** Set false by chat OCR polish to drop idle threads */
   keep?: boolean;
+  audience?: "me" | "other" | "neither";
+  topic?: "actionable" | "idle" | "market";
+  learnEpisodeId?: string;
 };
 
 const WEEK_MS = 7 * 24 * 3600_000;
@@ -788,47 +792,35 @@ export async function detectOpenLoops(
   const canLlm = slots > 0;
 
   let chatCands = recalled.filter((c) => c.source === "chat");
-  if (canLlm && chatCands.length > 0) {
-    chatCands = await polishChatCandidates(chatCands);
+  if (chatCands.length > 0) {
+    chatCands = canLlm
+      ? await polishChatCandidates(chatCands)
+      : chatCands.map((c) => applyChatPolish(c, undefined));
   }
   chatCands = chatCands.filter((c) => c.keep !== false);
 
-  const chatSelf = chatCands.filter((c) => c.fromMe);
-  const chatOther = chatCands.filter((c) => !c.fromMe);
-
   let structured: Array<LoopCandidate & { structured?: StructuredLoop }> =
-    chatSelf.map((c) => asAccepted(c, true));
+    chatCands.map((c) => asAccepted(c, true));
 
   if (canLlm) {
-    const queued = [...chatOther, ...itemCands];
+    const queued = itemCands;
     const forLlm = queued.slice(0, slots);
     if (queued.length > forLlm.length) {
       log.info("Loop LLM capped candidates", {
         recalled: queued.length,
         sent: forLlm.length,
-        chat: chatOther.length,
         maxPerRun: budget.maxPerRun,
         remainingToday: budget.remainingToday,
       });
     }
     structured.push(...(await structureCandidates(forLlm)));
-
-    const overflow = queued.slice(forLlm.length);
-    for (const c of overflow) {
-      structured.push(
-        asAccepted(c, c.source === "chat" && c.recallScore >= 0.75),
-      );
-    }
   } else {
     log.info("Loop LLM budget exhausted — heuristic chat only", {
       recalled: recalled.length,
       usedToday: budget.usedToday,
       maxPerDay: budget.maxPerDay,
     });
-    structured.push(
-      ...chatOther.map((c) => asAccepted(c, c.recallScore >= 0.75)),
-      ...itemCands.map((c) => asAccepted(c, false)),
-    );
+    structured.push(...itemCands.map((c) => asAccepted(c, false)));
   }
 
   const db = getDb();
@@ -957,6 +949,9 @@ export async function detectOpenLoops(
         })
         .run();
       updated++;
+      if (c.learnEpisodeId) {
+        linkLearnCard(c.learnEpisodeId, existingId, nextTitle);
+      }
       continue;
     }
 
@@ -1009,6 +1004,9 @@ export async function detectOpenLoops(
       })
       .run();
     created++;
+    if (c.learnEpisodeId) {
+      linkLearnCard(c.learnEpisodeId, id, title);
+    }
   }
 
   log.info("Open loop detect", {

@@ -13,6 +13,7 @@ import {
 } from "./db/schema.js";
 import { newId } from "./jobs.js";
 import type { SpamInput } from "./spam.js";
+import { recordLearnReward } from "./learn-graph.js";
 
 export type UserRuleMatchType =
   | "sender"
@@ -314,6 +315,8 @@ function deriveRulesFromLoop(
     .all()
     .find((l) => l.id === loopId);
   if (!loopRow) return { ok: false, rules: [], error: "not found" };
+
+  recordLearnReward(loopId, intent);
 
   const evidence = db
     .select()

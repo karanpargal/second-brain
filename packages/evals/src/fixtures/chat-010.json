@@ -1,0 +1,10 @@
+{
+  "id": "chat-010",
+  "source": "chat",
+  "label": "not_loop",
+  "input": {
+    "app": "Slack",
+    "windowTitle": "pritesh (DM) - Covalent - Slack",
+    "text": "HEADER: esh\nOpened LONG xyz:GOLD Market $99.81 notional PnL -0.15 cross margin TP/SL"
+  }
+}

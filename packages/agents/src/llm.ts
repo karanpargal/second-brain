@@ -274,7 +274,7 @@ function offlineStub(prompt: string, model: string): LlmCallResult {
       provider: "stub",
     };
   }
-  if (prompt.includes("POLISH_CHAT_OCR")) {
+  if (prompt.includes("CLASSIFY_CHAT_OCR") || prompt.includes("POLISH_CHAT_OCR")) {
     return {
       text: JSON.stringify({ loops: [] }),
       model: `stub-${model}`,

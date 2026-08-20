@@ -75,6 +75,7 @@ export {
   parseChatPolishResponse,
   buildChatPolishPrompt,
   chatDateContext,
+  heuristicChatClass,
 } from "./polish-chat.js";
 export { computePriority } from "./priority.js";
 export {

@@ -67,3 +67,13 @@ export {
   type UserRuleIntent,
   type UserRuleHit,
 } from "./user-spam.js";
+export {
+  recordLearnClassify,
+  recordLearnReward,
+  linkLearnCard,
+  learnGraphFewShot,
+  looksLikeMarket,
+  type ChatAudience,
+  type ChatTopic,
+  type LearnClassifyInput,
+} from "./learn-graph.js";

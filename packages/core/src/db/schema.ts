@@ -318,6 +318,47 @@ export const userSpamRules = sqliteTable(
   }),
 );
 
+/**
+ * Classification graph for OCR → card decisions.
+ * Later RL: (state=ocr node, action=class node, reward=outcome node).
+ */
+export const learnNodes = sqliteTable(
+  "learn_nodes",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind").notNull(), // ocr | class | card | outcome | market
+    label: text("label").notNull(),
+    payloadJson: text("payload_json").notNull().default("{}"),
+    reward: real("reward"),
+    createdAt: ts("created_at"),
+  },
+  (t) => ({
+    kindIdx: index("learn_nodes_kind").on(t.kind),
+    createdIdx: index("learn_nodes_created").on(t.createdAt),
+  }),
+);
+
+export const learnEdges = sqliteTable(
+  "learn_edges",
+  {
+    id: text("id").primaryKey(),
+    fromId: text("from_id")
+      .notNull()
+      .references(() => learnNodes.id),
+    toId: text("to_id")
+      .notNull()
+      .references(() => learnNodes.id),
+    rel: text("rel").notNull(), // classified | carded | rewarded | corrected
+    weight: real("weight").notNull().default(1),
+    createdAt: ts("created_at"),
+  },
+  (t) => ({
+    fromIdx: index("learn_edges_from").on(t.fromId),
+    toIdx: index("learn_edges_to").on(t.toId),
+    relIdx: index("learn_edges_rel").on(t.rel),
+  }),
+);
+
 /** Legacy tasks table kept for gmail-extracted proposals during transition */
 export const tasks = sqliteTable(
   "tasks",

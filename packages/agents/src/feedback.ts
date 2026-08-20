@@ -4,6 +4,7 @@ import {
   userProfiles,
   openLoops,
   newId,
+  recordLearnReward,
 } from "@second-brain/core";
 import { eq } from "drizzle-orm";
 import { embedText, cosine } from "@second-brain/enrich";
@@ -33,6 +34,7 @@ export async function recordLoopFeedback(
       embeddingJson,
     })
     .run();
+  recordLearnReward(loopId, signal);
 }
 
 function centroid(

@@ -6,6 +6,7 @@ import {
   chatDateContext,
   scoreChatAction,
   parseDueHint,
+  heuristicChatClass,
 } from "@second-brain/agents";
 import type { LoopCandidate } from "@second-brain/agents";
 
@@ -63,7 +64,7 @@ describe("chat OCR LLM polish", () => {
     expect(out.title).toBe(c.title);
   });
 
-  it("prompt includes today/tomorrow and HEADER", () => {
+  it("prompt classifies me vs other before writing a card", () => {
     const now = new Date(2026, 7, 19, 12, 0, 0);
     const { tomorrowDmy } = chatDateContext(now);
     const prompt = buildChatPolishPrompt(
@@ -77,10 +78,40 @@ describe("chat OCR LLM polish", () => {
       ],
       now,
     );
-    expect(prompt).toContain("POLISH_CHAT_OCR");
+    expect(prompt).toContain("CLASSIFY_CHAT_OCR");
+    expect(prompt).toContain("audience");
     expect(prompt).toContain(tomorrowDmy);
     expect(prompt).toContain("Wini");
     expect(prompt).toContain("tonwrrow");
+    expect(prompt).toMatch(/me \| other \| neither/);
+  });
+
+  it("drops market tape and other-people promises without a card", () => {
+    expect(
+      heuristicChatClass(
+        "Opened LONG xyz:GOLD Market $99.81 notional PnL cross margin",
+      ),
+    ).toMatchObject({ audience: "neither", topic: "market", keep: false });
+    expect(
+      heuristicChatClass("Farhan: I will send the invoice tomorrow", false),
+    ).toMatchObject({ audience: "other", keep: false });
+    expect(
+      heuristicChatClass(
+        "HEADER: Wini You\nYou: I will share the revenue details by tomorrow",
+        true,
+      ),
+    ).toMatchObject({ audience: "me", keep: true });
+  });
+
+  it("applyChatPolish honors audience=other even if keep was true", () => {
+    const out = applyChatPolish(baseCand({ fromMe: true }), {
+      i: 0,
+      keep: true,
+      audience: "other",
+      topic: "actionable",
+      title: "Follow up with Farhan",
+    });
+    expect(out.keep).toBe(false);
   });
 
   it("softens tonwrrow in heuristic scoring", () => {

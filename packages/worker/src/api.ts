@@ -267,7 +267,7 @@ async function handle(
     reply(200, {
       ok: true,
       dataDir: config.dataDir,
-      apiVersion: 9,
+      apiVersion: 10,
       features: [
         "spam",
         "wake",
@@ -276,6 +276,8 @@ async function handle(
         "improve-learn",
         "chat-loops",
         "chat-ocr",
+        "ocr-classify",
+        "learn-graph",
         "self-eval",
       ],
       eval: lastEval

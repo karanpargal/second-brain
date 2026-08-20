@@ -235,6 +235,29 @@ CREATE TABLE IF NOT EXISTS user_spam_rules (
 );
 CREATE INDEX IF NOT EXISTS user_spam_rules_type ON user_spam_rules(match_type);
 
+CREATE TABLE IF NOT EXISTS learn_nodes (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  label TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  reward REAL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS learn_nodes_kind ON learn_nodes(kind);
+CREATE INDEX IF NOT EXISTS learn_nodes_created ON learn_nodes(created_at);
+
+CREATE TABLE IF NOT EXISTS learn_edges (
+  id TEXT PRIMARY KEY,
+  from_id TEXT NOT NULL REFERENCES learn_nodes(id),
+  to_id TEXT NOT NULL REFERENCES learn_nodes(id),
+  rel TEXT NOT NULL,
+  weight REAL NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS learn_edges_from ON learn_edges(from_id);
+CREATE INDEX IF NOT EXISTS learn_edges_to ON learn_edges(to_id);
+CREATE INDEX IF NOT EXISTS learn_edges_rel ON learn_edges(rel);
+
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
   horizon_id TEXT REFERENCES horizons(id),
