@@ -42,3 +42,4 @@ windows = { version = "0.58", features = [
   "Foundation",
   "Globalization",
 ] }
+webview2-com = "0.38"

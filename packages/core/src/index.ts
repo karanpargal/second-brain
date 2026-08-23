@@ -1,4 +1,4 @@
-export { config, ensureDataDir, ensureMasterKey } from "./config.js";
+export { config, ensureDataDir, ensureMasterKey, normalizeOllamaKeepAlive } from "./config.js";
 export {
   ensureApiToken,
   readApiToken,

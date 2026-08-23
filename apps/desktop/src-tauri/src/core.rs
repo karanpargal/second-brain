@@ -76,7 +76,7 @@ pub fn health_ok() -> bool {
 }
 
 /// Current desktop expects these API capabilities (bump with worker health.apiVersion).
-const REQUIRED_API_VERSION: i32 = 10;
+const REQUIRED_API_VERSION: i32 = 14;
 
 pub fn core_api_version() -> Option<i32> {
     use std::io::{Read, Write};

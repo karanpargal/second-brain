@@ -1,8 +1,13 @@
 export {
   runLlm,
+  runLlmChat,
   runClaude,
   parseJsonFromText,
   type LlmCallResult,
+  type LlmChatResult,
+  type LlmChatMessage,
+  type LlmToolDef,
+  type LlmToolCall,
   type LlmRole,
 } from "./llm.js";
 export { annotateTopItems } from "./tagger.js";
@@ -45,8 +50,23 @@ export {
   generateDigest,
   collectLoopCandidates,
   collapseDuplicateOpenLoops,
+  reviewStaleLoops,
+  backfillLoopQuality,
+  isSelfGeneratedObservation,
   type LoopCandidate,
 } from "./loops.js";
+export {
+  extractLoop,
+  extractLoopCandidates,
+} from "./loop-extract.js";
+export {
+  validateExtractedLoop,
+  validateOrRepair,
+  repairExtractedLoop,
+  isWeakLoopTitle,
+  BANNED_GENERIC_TITLES,
+  type ExtractedLoopFields,
+} from "./loop-validate.js";
 export {
   classifyMailLoop,
   isGenericTitle,
@@ -65,10 +85,13 @@ export {
   senderKey,
   titleSim,
   normalizeTitle,
+  adjudicateSameTask,
+  DEDUPE_COSINE_MERGE,
+  DEDUPE_COSINE_BORDER_LOW,
   type DedupeInput,
 } from "./loop-dedupe.js";
-export { getLoopLlmBudget, llmSlotsForThisRun } from "./loop-budget.js";
-export { parseDueAt, parseDueHint } from "./due.js";
+export { getLoopLlmBudget, llmSlotsForThisRun, enqueueLlm } from "./loop-budget.js";
+export { parseDueAt, parseDueHint, formatDue, type FormattedDue } from "./due.js";
 export {
   polishChatCandidates,
   applyChatPolish,
@@ -94,7 +117,32 @@ export {
   type EvalLearnReport,
   type EvalLearnMiss,
 } from "./eval-learn.js";
-export { askMemory, todayTimeline } from "./ask.js";
+export {
+  askMemory,
+  todayTimeline,
+  buildAskContext,
+  type AskResult,
+  type AskSource,
+  type AskContextInput,
+  type AskTurn,
+} from "./ask.js";
+export {
+  cartesiaTranscribe,
+  cartesiaSpeak,
+  isCartesiaConfigured,
+  saveCartesiaApiKey,
+  isWeakVoiceTranscript,
+  CARTESIA_SECRET_KEY,
+  CARTESIA_VERSION,
+  CARTESIA_STT_MODEL,
+  CARTESIA_TTS_MODEL,
+  CARTESIA_DEFAULT_VOICE_ID,
+} from "./cartesia.js";
+export {
+  hostedLlmStatus,
+  saveHostedLlm,
+  HOSTED_LLM_SECRET_KEY,
+} from "./hosted-llm.js";
 export { bucketOpenLoops, isUrgentLoop, isTodayLoop } from "./buckets.js";
 export {
   createReminder,
@@ -117,6 +165,18 @@ export {
   trackLearningTopic,
   parseSuggestions,
 } from "./insights.js";
+export {
+  runAdvisor,
+  persistAdviceCards,
+  harvestBriefSuggestions,
+  type AdviceCard,
+  type AdviceSource,
+} from "./advisor.js";
+export {
+  buildMcpCatalog,
+  executeNamespacedTool,
+  isReadOnlyTool,
+} from "./mcp-tools.js";
 export {
   isNoiseSurface,
   isWorkArtifact,

@@ -8,6 +8,18 @@ For each Planner feature: would the personal desktop agent actually do this job?
 
 ## Log
 
+## Run 2026-08-20 — Cartesia voice + personal brain
+
+**What:** Logic check that voice Ask answers from local brain, not Cartesia-as-LLM.
+
+**Why:** North star: Ollama is the brain; Cartesia is speech I/O.
+
+**Evidence:** `POST /api/ask/voice` → `cartesiaTranscribe` → `askMemory` (RAG + timeline + loops + profile + turns) → `cartesiaSpeak`. Empty STT rejected. Missing key → 503 with Settings hint. Text path unchanged without key.
+
+**Verdicts:** V01–V06 needed and built as intended. Not a second knowledge-graph UI — learn_nodes remain classifier training, not Ask traversal (correct vs north star).
+
+---
+
 ## Run 2026-08-18 — Improve coach re-audit
 
 **What:** Logic re-audit of Planner U01–U15 against the shipped Improve coach. Static inspection of extract/rank → generate → widget → capture identity. Did not implement. Did not KEEP RescueTime / focus telemetry.

@@ -11,8 +11,8 @@ import {
   isSpam,
   classifySpam,
   isBlockedByUserRules,
-  formatUserRulesForPrompt,
   linkLearnCard,
+  looksLikeMarket,
 } from "@second-brain/core";
 import { eq } from "drizzle-orm";
 import { runLlm, parseJsonFromText } from "./llm.js";
@@ -23,23 +23,24 @@ import {
   scoreChatAction,
   detectChatApp,
 } from "./chat-actions.js";
-import { evalFewShotForPrompt } from "./eval-learn.js";
 import { getLoopLlmBudget } from "./loop-budget.js";
 import { parseDueAt, parseDueHint } from "./due.js";
-import { polishChatCandidates, applyChatPolish } from "./polish-chat.js";
 import { computePriority } from "./priority.js";
 import {
   loopsAreDuplicate,
   sourceThreadKey,
+  adjudicateSameTask,
+  DEDUPE_COSINE_MERGE,
+  DEDUPE_COSINE_BORDER_LOW,
   type DedupeInput,
 } from "./loop-dedupe.js";
 import {
   classifyMailLoop,
-  isGenericTitle,
   parseCategory,
-  polishLoopTitle,
   type LoopCategory,
 } from "./categories.js";
+import { isWeakLoopTitle } from "./loop-validate.js";
+import { extractLoopCandidates } from "./loop-extract.js";
 
 export type LoopCandidate = {
   title: string;
@@ -73,6 +74,9 @@ export type LoopCandidate = {
   audience?: "me" | "other" | "neither";
   topic?: "actionable" | "idle" | "market";
   learnEpisodeId?: string;
+  evidenceQuote?: string;
+  org?: string;
+  subjectTopic?: string;
 };
 
 const WEEK_MS = 7 * 24 * 3600_000;
@@ -182,8 +186,8 @@ function blockedForLoops(input: {
 }
 
 /**
- * Cheap heuristic candidates: items (email/issue/PR) + OCR observations.
- * Regex scores are RECALL only (threshold ~0.35); the LLM verifies everything.
+ * Cheap heuristic candidates: items (email/issue/PR) + chat OCR.
+ * Regex scores are RECALL only; the LLM verifies everything.
  */
 export function collectLoopCandidates(
   limit = 40,
@@ -196,7 +200,6 @@ export function collectLoopCandidates(
     ? new Date(Date.now() - opts.sinceMinutes * 60_000).toISOString()
     : weekAgo;
 
-  // --- 1) Items (email / issue / PR) ---
   if (!opts.obsOnly) {
     const recentItems = db
       .select()
@@ -227,8 +230,6 @@ export function collectLoopCandidates(
       )
       .slice(0, 80);
 
-    // One candidate per Gmail/GitHub thread — messages in a thread are
-    // separate items and otherwise become duplicate tasks.
     const userEmail = readGoogleUserEmail();
     for (const it of collapseItemsByThread(recentItems)) {
       const body = `${it.title}\n${it.body ?? ""}`;
@@ -250,7 +251,11 @@ export function collectLoopCandidates(
       } else if (!COMMITMENT_RE.test(body) && !actionableKind) {
         continue;
       }
-      if (it.kind === "notification" && !classified.keep && !COMMITMENT_RE.test(body)) {
+      if (
+        it.kind === "notification" &&
+        !classified.keep &&
+        !COMMITMENT_RE.test(body)
+      ) {
         continue;
       }
 
@@ -270,7 +275,8 @@ export function collectLoopCandidates(
         recallScore: recall,
         confidence: recall,
         itemId: it.id,
-        snippet: body.slice(0, 500),
+        // Full body for LOOP_EXTRACT (capped in extract)
+        snippet: body.slice(0, 2500),
         sourceUrl: it.url ?? undefined,
         source: "item",
         category: classified.category,
@@ -280,7 +286,6 @@ export function collectLoopCandidates(
     }
   }
 
-  // --- 2) Chat OCR: scan chat observations, not a global slice of every app ---
   const chatObs = db
     .select()
     .from(observations)
@@ -337,7 +342,7 @@ export function collectLoopCandidates(
       recallScore: scored.score,
       confidence: scored.score,
       observationId: o.id,
-      snippet: (o.text ?? scored.snippet).slice(0, 900),
+      snippet: (o.text ?? scored.snippet).slice(0, 2500),
       ocrText: o.text ?? undefined,
       source: "chat",
       category: "follow_up",
@@ -346,9 +351,6 @@ export function collectLoopCandidates(
     });
   }
 
-  // OCR is memory, not a loop source. Chat/docs "Continue:" cards were noise.
-
-  // Prefer items, then chat, then higher recall
   out.sort((a, b) => {
     const srcRank = (s?: string) =>
       s === "item" ? 0 : s === "chat" ? 1 : 2;
@@ -357,129 +359,6 @@ export function collectLoopCandidates(
     return b.recallScore - a.recallScore;
   });
   return out.slice(0, limit);
-}
-
-type StructuredLoop = {
-  title: string;
-  kind: LoopCandidate["kind"];
-  who?: string;
-  dueHint?: string;
-  confidence: number;
-  keep: boolean;
-  action?: string;
-  category?: LoopCategory;
-  tags?: string[];
-};
-
-async function structureCandidates(
-  candidates: LoopCandidate[],
-): Promise<Array<LoopCandidate & { structured?: StructuredLoop }>> {
-  if (candidates.length === 0) return [];
-
-  const payload = candidates.map((c, i) => ({
-    i,
-    title: c.title,
-    kind_hint: c.kind,
-    category_hint: c.category ?? "other",
-    from_me: Boolean(c.fromMe),
-    who: c.who ?? null,
-    snippet: c.snippet.slice(0, 300),
-    source: c.source ?? "ocr",
-  }));
-
-  const userRules = formatUserRulesForPrompt(40);
-  const evalHints = evalFewShotForPrompt();
-
-  const prompt = `STRUCTURE_LOOPS
-You extract open loops — unfinished commitments the user should ACT on.
-Return JSON only:
-{"loops":[{"i":0,"title":"...","action":"...","kind":"promise|awaiting_reply|unfinished|decision|deadline","category":"follow_up|reply|billing|career|review|deadline|calendar|github|other","tags":[],"who":null,"dueHint":null,"confidence":0.0,"keep":true}]}
-
-Rules:
-- "title" MUST name the person/company AND the topic. Never a single verb ("reply", "update", "follow up").
-  Good: "Follow up with Rivet hiring on the engineering role"
-  Bad: "reply"
-- from_me:true means the USER SENT this mail. That is NEVER "reply". Use category follow_up (wait for them) or keep:false.
-- Job applications / "interested in a role" that the user sent and is still waiting on → keep:true, category follow_up, tags ["career"], kind awaiting_reply.
-- Close-outs the user already sent (thanks / appreciate your time / happy to reconnect if something comes up / all the best) with no question and no ask → keep:false. The thread is done.
-- Quoted hiring-platform mail (Work at a Startup, "X sent you a message", YC relay) is not an application to follow up on if the user's own text already closed it.
-- Inbound billing / Stripe / failed payment → category billing.
-- IPO allotment / registrar status (KFin, shares allotted, amount unblocked, over-subscription) is FYI, not billing. keep:false.
-- Inbound mail that asks the user to respond → category reply, title "Reply to <name> about <topic>".
-- Drop spam, newsletters, marketing, noreply blasts (keep:false).
-- Drop anything matching USER_RULES below — keep:false.
-- Drop noise with no clear human action (keep:false).
-- Never emit two loops for the same email thread, sender+topic, or billing notice.
-- Chat OCR: keep:true only if the visible messages contain a real ask, commitment, time, or unfinished task (send/confirm/call/meet/deadline). Idle chat (ok, lol, thanks, stickers, "Type a message") → keep:false. Title must name the person AND the topic from the messages. Never keep a chat loop from a contact name alone. Never send.
-
-USER_RULES (do not track / never surface):
-${userRules}
-
-SELF_EVAL_CORRECTIONS (recent misses — do not repeat):
-${evalHints}
-
-Candidates:
-${JSON.stringify(payload, null, 0)}
-`;
-
-  const res = await runLlm({
-    prompt,
-    model: "fast",
-    purpose: "structure_loops",
-    skipHosted: true,
-  });
-  const parsed = parseJsonFromText<{
-    loops: Array<StructuredLoop & { i: number }>;
-  }>(res.text);
-
-  if (!parsed?.loops) {
-    // Parse failure: drop everything — nothing is verified without the LLM
-    return candidates.map((c) => asAccepted(c, false));
-  }
-
-  return candidates.map((c, i) => {
-    const s = parsed.loops.find((x) => x.i === i);
-    if (!s || s.keep === false)
-      return { ...c, structured: { ...s, keep: false } as StructuredLoop };
-    if (c.fromMe) {
-      const cat = parseCategory(s.category);
-      if (cat === "reply" || cat === "career") s.category = "follow_up";
-    }
-    const actionTitle = polishLoopTitle(s.action || s.title, c.title);
-    const confidence = s.confidence ?? c.confidence;
-    const category = parseCategory(s.category ?? c.category);
-    const tags = Array.isArray(s.tags) && s.tags.length > 0 ? s.tags.map(String) : (c.tags ?? []);
-    return {
-      ...c,
-      title: actionTitle,
-      description: c.description,
-      kind: s.kind || c.kind,
-      who: s.who ?? c.who,
-      dueHint: s.dueHint ?? c.dueHint,
-      confidence,
-      category,
-      tags,
-      structured: { ...s, confidence, category, title: actionTitle },
-    };
-  });
-}
-
-function asAccepted(
-  c: LoopCandidate,
-  keep: boolean,
-): LoopCandidate & { structured: StructuredLoop } {
-  return {
-    ...c,
-    structured: {
-      title: c.title,
-      kind: c.kind,
-      who: c.who,
-      dueHint: c.dueHint,
-      confidence: c.confidence,
-      keep,
-      action: c.title,
-    },
-  };
 }
 
 function asDedupeInput(c: {
@@ -498,9 +377,10 @@ function asDedupeInput(c: {
 
 /**
  * Dedupe by Gmail/GitHub thread, sender+topic, title similarity, then embedding.
+ * Borderline cosine (0.6–0.85) goes to LLM adjudication.
  */
 async function findSimilarOpenLoop(
-  candidate: DedupeInput,
+  candidate: DedupeInput & { description?: string | null },
   emb: number[] | null,
 ): Promise<string | null> {
   const db = getDb();
@@ -511,6 +391,7 @@ async function findSimilarOpenLoop(
     .filter((l) => l.status === "open" || l.status === "snoozed");
 
   const allEv = db.select().from(loopEvidence).all();
+  const border: Array<{ id: string; cos: number; loop: (typeof open)[0] }> = [];
 
   for (const l of open) {
     const ev = allEv.filter((e) => e.loopId === l.id);
@@ -538,13 +419,31 @@ async function findSimilarOpenLoop(
     if (emb && l.embeddingJson) {
       try {
         const other = JSON.parse(l.embeddingJson) as number[];
-        if (other.length === emb.length && cosine(emb, other) > 0.82) {
-          return l.id;
+        if (other.length === emb.length) {
+          const cos = cosine(emb, other);
+          if (cos > DEDUPE_COSINE_MERGE) return l.id;
+          if (cos >= DEDUPE_COSINE_BORDER_LOW && cos <= DEDUPE_COSINE_MERGE) {
+            border.push({ id: l.id, cos, loop: l });
+          }
         }
       } catch {
         /* */
       }
     }
+  }
+
+  border.sort((a, b) => b.cos - a.cos);
+  for (const hit of border.slice(0, 3)) {
+    const verdict = await adjudicateSameTask(
+      candidate,
+      {
+        title: hit.loop.title,
+        who: hit.loop.who,
+        description: hit.loop.description,
+      },
+      hit.cos,
+    );
+    if (verdict.sameTask) return hit.id;
   }
   return null;
 }
@@ -645,9 +544,11 @@ export function collapseDuplicateOpenLoops(): { merged: number } {
     members.sort((ia, ib) => {
       const a = sigs[ia];
       const b = sigs[ib];
-      const snooze = Number(b.loop.status === "snoozed") - Number(a.loop.status === "snoozed");
+      const snooze =
+        Number(b.loop.status === "snoozed") - Number(a.loop.status === "snoozed");
       if (snooze !== 0) return snooze;
-      const ev = b.itemIds.length + b.urls.length - (a.itemIds.length + a.urls.length);
+      const ev =
+        b.itemIds.length + b.urls.length - (a.itemIds.length + a.urls.length);
       if (ev !== 0) return ev;
       return a.loop.detectedAt.localeCompare(b.loop.detectedAt);
     });
@@ -665,7 +566,7 @@ export function collapseDuplicateOpenLoops(): { merged: number } {
           .where(eq(reminders.loopId, loser.id))
           .run();
       } catch {
-        /* reminders table may be unused */
+        /* */
       }
       db.update(openLoops)
         .set({
@@ -723,11 +624,11 @@ function recategorizeOpenLoops(): void {
       userEmail,
       kind: it.kind,
     });
-    const generic = isGenericTitle(loop.title);
+    const weak = isWeakLoopTitle(loop.title, loop.who);
     if (
       !classified.keep &&
       loop.origin !== "manual" &&
-      (generic || classified.fromMe || loop.category === "billing")
+      (weak || classified.fromMe || loop.category === "billing")
     ) {
       db.update(openLoops)
         .set({
@@ -744,7 +645,7 @@ function recategorizeOpenLoops(): void {
       continue;
     }
     if (!classified.keep) continue;
-    const nextTitle = generic ? classified.title : loop.title;
+    const nextTitle = weak ? classified.title : loop.title;
     const nextCategory =
       !loop.category || loop.category === "other"
         ? classified.category
@@ -755,7 +656,7 @@ function recategorizeOpenLoops(): void {
         category: nextCategory,
         tagsJson: JSON.stringify(classified.tags),
         who: classified.who ?? loop.who,
-        kind: generic ? classified.kind : loop.kind,
+        kind: weak ? classified.kind : loop.kind,
         updatedAt: now,
       })
       .where(eq(openLoops.id, loop.id))
@@ -763,6 +664,132 @@ function recategorizeOpenLoops(): void {
     n++;
   }
   if (n > 0) log.info("Recategorized open loops", { updated: n });
+}
+
+function persistCandidate(
+  c: LoopCandidate & { keep?: boolean },
+  existingId: string | null,
+  emb: number[] | null,
+  now: string,
+): "created" | "updated" | "skipped" {
+  const db = getDb();
+  if (c.keep === false) return "skipped";
+  const title = c.title;
+
+  if (existingId) {
+    const existing = db
+      .select()
+      .from(openLoops)
+      .where(eq(openLoops.id, existingId))
+      .get();
+    const garbageTitle = /["']{2,}|N"\s*v"|bi["']|tonwrrow|to you by/i.test(
+      existing?.title ?? "",
+    );
+    const nextTitle =
+      c.source === "chat"
+        ? title
+        : existing &&
+            isWeakLoopTitle(existing.title, existing.who) &&
+            !isWeakLoopTitle(title)
+          ? title
+          : garbageTitle
+            ? title
+            : existing?.title ?? title;
+    const nextDue =
+      c.source === "chat"
+        ? (c.dueAt ?? existing?.dueAt ?? null)
+        : (c.dueAt ?? existing?.dueAt ?? null);
+    db.update(openLoops)
+      .set({
+        lastSeenAt: now,
+        confidence: Math.max(c.confidence, 0.4),
+        updatedAt: now,
+        title: nextTitle,
+        description:
+          c.source === "chat" || garbageTitle
+            ? (c.description ?? existing?.description ?? null)
+            : (existing?.description ?? c.description ?? null),
+        category: c.category ?? existing?.category ?? "other",
+        tagsJson: JSON.stringify(c.tags ?? []),
+        who: c.who ?? existing?.who ?? null,
+        dueAt: nextDue,
+        dueHint: null,
+        priority: computePriority({
+          dueAt: nextDue,
+          kind: c.kind,
+          confidence: c.confidence,
+        }),
+      })
+      .where(eq(openLoops.id, existingId))
+      .run();
+    db.insert(loopEvidence)
+      .values({
+        id: newId(),
+        loopId: existingId,
+        observationId: c.observationId ?? null,
+        itemId: c.itemId ?? null,
+        role: "progressed",
+        note: c.sourceUrl
+          ? `re-detected · ${c.sourceUrl}`
+          : c.evidenceQuote
+            ? `re-detected · ${c.evidenceQuote.slice(0, 200)}`
+            : "re-detected",
+      })
+      .run();
+    if (c.learnEpisodeId) {
+      linkLearnCard(c.learnEpisodeId, existingId, nextTitle);
+    }
+    return "updated";
+  }
+
+  const dueAt =
+    c.dueAt ??
+    (c.dueHint ? parseDueHint(c.dueHint) : null) ??
+    parseDueAt(c.title) ??
+    parseDueAt(c.snippet);
+  const priority = computePriority({
+    dueAt,
+    kind: c.kind,
+    confidence: c.confidence,
+  });
+
+  const id = newId();
+  db.insert(openLoops)
+    .values({
+      id,
+      title,
+      description: c.description ?? null,
+      kind: c.kind,
+      status: "open",
+      confidence: c.confidence,
+      detectedAt: now,
+      dueHint: null,
+      dueAt: dueAt ?? null,
+      priority,
+      lastSeenAt: now,
+      origin: "detected",
+      who: c.who ?? null,
+      embeddingJson: emb ? JSON.stringify(emb) : null,
+      category: c.category ?? "other",
+      tagsJson: JSON.stringify(c.tags ?? []),
+    })
+    .run();
+  db.insert(loopEvidence)
+    .values({
+      id: newId(),
+      loopId: id,
+      observationId: c.observationId ?? null,
+      itemId: c.itemId ?? null,
+      role: "opened",
+      note: c.sourceUrl
+        ? `${(c.evidenceQuote ?? c.snippet).slice(0, 200)} · ${c.sourceUrl}`
+        : (c.evidenceQuote ?? c.snippet).slice(0, 300),
+    })
+    .run();
+  if (c.learnEpisodeId) {
+    linkLearnCard(c.learnEpisodeId, id, title);
+  }
+  return "created";
 }
 
 export async function detectOpenLoops(
@@ -778,57 +805,21 @@ export async function detectOpenLoops(
     log.info("Pre-detect duplicate collapse", collapsed);
   }
   recategorizeOpenLoops();
-  // Fast wake scans recent items + OCR; full runs look back a week. No L1 bypass.
+
   const candidates = collectLoopCandidates(fast ? 24 : 40, {
     sinceMinutes: fast ? 20 : undefined,
   });
 
-  // All recall-pass candidates — no L1 accept bypass
   const recalled = candidates.filter((c) => c.recallScore >= RECALL_THRESHOLD);
-  const itemCands = recalled.filter((c) => c.source !== "chat");
-
   const budget = getLoopLlmBudget();
   const slots = Math.min(budget.maxPerRun, budget.remainingToday);
   const canLlm = slots > 0;
 
-  let chatCands = recalled.filter((c) => c.source === "chat");
-  if (chatCands.length > 0) {
-    chatCands = canLlm
-      ? await polishChatCandidates(chatCands)
-      : chatCands.map((c) => applyChatPolish(c, undefined));
-  }
-  chatCands = chatCands.filter((c) => c.keep !== false);
-
-  let structured: Array<LoopCandidate & { structured?: StructuredLoop }> =
-    chatCands.map((c) => asAccepted(c, true));
-
-  if (canLlm) {
-    const queued = itemCands;
-    const forLlm = queued.slice(0, slots);
-    if (queued.length > forLlm.length) {
-      log.info("Loop LLM capped candidates", {
-        recalled: queued.length,
-        sent: forLlm.length,
-        maxPerRun: budget.maxPerRun,
-        remainingToday: budget.remainingToday,
-      });
-    }
-    structured.push(...(await structureCandidates(forLlm)));
-  } else {
-    log.info("Loop LLM budget exhausted — heuristic chat only", {
-      recalled: recalled.length,
-      usedToday: budget.usedToday,
-      maxPerDay: budget.maxPerDay,
-    });
-    structured.push(...itemCands.map((c) => asAccepted(c, false)));
-  }
-
-  const db = getDb();
   let created = 0;
   let updated = 0;
   const now = new Date().toISOString();
+  const db = getDb();
 
-  // Drop existing open loops that match spam / not_tracking / promo (full runs only)
   if (!fast) {
     let spamClosed = 0;
     for (const l of db
@@ -886,127 +877,43 @@ export async function detectOpenLoops(
     }
   }
 
-  for (const c of structured) {
-    if (c.structured && c.structured.keep === false) continue;
-    const title = c.title;
+  if (!canLlm) {
+    log.info("Loop LLM budget exhausted — skipping extract", {
+      recalled: recalled.length,
+      usedToday: budget.usedToday,
+      maxPerDay: budget.maxPerDay,
+    });
+    return { candidates: candidates.length, created: 0, updated: 0 };
+  }
+
+  const forLlm = recalled.slice(0, slots);
+  if (recalled.length > forLlm.length) {
+    log.info("Loop LLM capped candidates", {
+      recalled: recalled.length,
+      sent: forLlm.length,
+      maxPerRun: budget.maxPerRun,
+      remainingToday: budget.remainingToday,
+    });
+  }
+
+  const extracted = await extractLoopCandidates(forLlm);
+
+  for (const c of extracted) {
+    if (c.keep === false) continue;
     let emb: number[] | null = null;
     try {
-      emb = await embedText(title);
+      emb = await embedText(c.title);
     } catch {
       emb = null;
     }
 
-    const existingId = await findSimilarOpenLoop(asDedupeInput(c), emb);
-    if (existingId) {
-      const existing = db
-        .select()
-        .from(openLoops)
-        .where(eq(openLoops.id, existingId))
-        .get();
-      const garbageTitle = /["']{2,}|N"\s*v"|bi["']|tonwrrow|to you by/i.test(
-        existing?.title ?? "",
-      );
-      const nextTitle =
-        c.source === "chat"
-          ? title
-          : existing && isGenericTitle(existing.title) && !isGenericTitle(title)
-            ? title
-            : garbageTitle
-              ? title
-              : existing?.title ?? title;
-      const nextDue =
-        c.source === "chat"
-          ? (c.dueAt ?? existing?.dueAt ?? null)
-          : existing?.dueAt ?? null;
-      db.update(openLoops)
-        .set({
-          lastSeenAt: now,
-          confidence: Math.max(c.confidence, 0.4),
-          updatedAt: now,
-          title: nextTitle,
-          description:
-            c.source === "chat" || garbageTitle
-              ? (c.description ?? existing?.description ?? null)
-              : (existing?.description ?? c.description ?? null),
-          category: c.category ?? existing?.category ?? "other",
-          tagsJson: JSON.stringify(c.tags ?? []),
-          who: c.who ?? existing?.who ?? null,
-          dueAt: nextDue,
-          dueHint: c.dueHint ?? existing?.dueHint ?? nextDue,
-        })
-        .where(eq(openLoops.id, existingId))
-        .run();
-      db.insert(loopEvidence)
-        .values({
-          id: newId(),
-          loopId: existingId,
-          observationId: c.observationId ?? null,
-          itemId: c.itemId ?? null,
-          role: "progressed",
-          note: c.sourceUrl
-            ? `re-detected · ${c.sourceUrl}`
-            : "re-detected",
-        })
-        .run();
-      updated++;
-      if (c.learnEpisodeId) {
-        linkLearnCard(c.learnEpisodeId, existingId, nextTitle);
-      }
-      continue;
-    }
-
-    const dueAt =
-      c.source === "chat"
-        ? (c.dueAt ??
-          parseDueHint(c.dueHint ?? "") ??
-          parseDueAt(c.title))
-        : (c.dueAt ??
-          (c.dueHint && !Number.isNaN(Date.parse(c.dueHint))
-            ? new Date(c.dueHint).toISOString()
-            : parseDueAt(c.snippet)));
-    const priority = computePriority({
-      dueAt,
-      kind: c.kind,
-      confidence: c.confidence,
-    });
-
-    const id = newId();
-    db.insert(openLoops)
-      .values({
-        id,
-        title,
-        description: c.description ?? null,
-        kind: c.kind,
-        status: "open",
-        confidence: c.confidence,
-        detectedAt: now,
-        dueHint: c.dueHint ?? dueAt ?? null,
-        dueAt: dueAt ?? null,
-        priority,
-        lastSeenAt: now,
-        origin: "detected",
-        who: c.who ?? null,
-        embeddingJson: emb ? JSON.stringify(emb) : null,
-        category: c.category ?? "other",
-        tagsJson: JSON.stringify(c.tags ?? []),
-      })
-      .run();
-    db.insert(loopEvidence)
-      .values({
-        id: newId(),
-        loopId: id,
-        observationId: c.observationId ?? null,
-        itemId: c.itemId ?? null,
-        role: "opened",
-        note: c.sourceUrl
-          ? `${c.snippet.slice(0, 200)} · ${c.sourceUrl}`
-          : c.snippet.slice(0, 300),
-      })
-      .run();
-    created++;
-    if (c.learnEpisodeId) {
-      linkLearnCard(c.learnEpisodeId, id, title);
-    }
+    const existingId = await findSimilarOpenLoop(
+      { ...asDedupeInput(c), description: c.description },
+      emb,
+    );
+    const result = persistCandidate(c, existingId, emb, now);
+    if (result === "created") created++;
+    else if (result === "updated") updated++;
   }
 
   log.info("Open loop detect", {
@@ -1018,8 +925,47 @@ export async function detectOpenLoops(
   return { candidates: candidates.length, created, updated };
 }
 
+/** Observations from our own UI / IDE must never close loops. */
+export function isSelfGeneratedObservation(o: {
+  app?: string | null;
+  exe?: string | null;
+  windowTitle?: string | null;
+  url?: string | null;
+}): boolean {
+  const blob = `${o.app ?? ""} ${o.exe ?? ""} ${o.windowTitle ?? ""} ${o.url ?? ""}`.toLowerCase();
+  if (/\bcursor\b/.test(blob)) return true;
+  if (/\bsecond[- ]?brain\b/.test(blob)) return true;
+  if (
+    /\bwidget\b/.test(blob) &&
+    /127\.0\.0\.1:3000|localhost:3000/.test(blob)
+  ) {
+    return true;
+  }
+  if (/code\.exe|devenv\.exe|windsurf|vs ?code/.test(blob)) return true;
+  return false;
+}
+
+const RESOLVE_SCHEMA = {
+  type: "object",
+  properties: {
+    resolved: { type: "boolean" },
+    quote: { type: "string" },
+    confidence: { type: "number" },
+    reason: { type: "string" },
+  },
+  required: ["resolved", "confidence", "reason"],
+};
+
+type EvidenceHit = {
+  kind: "item" | "observation";
+  id: string;
+  title: string;
+  body: string;
+  score: number;
+};
+
 /**
- * Auto-close loops when new evidence suggests resolution.
+ * LLM resolution judge — replaces regex auto-close.
  */
 export async function autoCloseLoops(): Promise<{ closed: number }> {
   const db = getDb();
@@ -1045,80 +991,147 @@ export async function autoCloseLoops(): Promise<{ closed: number }> {
     .select()
     .from(observations)
     .all()
-    .filter((o) => o.ts >= weekAgo)
+    .filter(
+      (o) =>
+        o.ts >= weekAgo &&
+        !isSelfGeneratedObservation(o),
+    )
     .sort((a, b) => b.ts.localeCompare(a.ts))
     .slice(0, 200);
 
   let closed = 0;
   const now = new Date().toISOString();
 
-  const closePatterns =
-    /\b(done|merged|shipped|sent|resolved|closed|completed|fixed|replied|no longer needed)\b/i;
-
   for (const loop of open) {
-    let closingItemId: string | undefined;
-    let closingObsId: string | undefined;
-    let closeReason = "auto_evidence";
-    let note = "";
-
-    // Evidence path: token overlap >= 3 with recent items / observations
-    if (!closingObsId) {
-      const tokens = loop.title
-        .toLowerCase()
-        .split(/\W+/)
-        .filter((t) => t.length > 3)
-        .slice(0, 8);
-      if (tokens.length === 0) continue;
-      const need = Math.min(3, tokens.length);
-
-      for (const it of recentItems) {
-        const body = `${it.title}\n${it.body ?? ""}`.toLowerCase();
-        const hit = tokens.filter((t) => body.includes(t)).length;
-        if (hit < need) continue;
-        if (
-          closePatterns.test(body) ||
-          (it.kind === "pr" && /merged|closed/i.test(body))
-        ) {
-          closingItemId = it.id;
-          note = `Item evidence: ${it.title}`;
-          break;
-        }
+    let loopEmb: number[] | null = null;
+    try {
+      if (loop.embeddingJson) {
+        loopEmb = JSON.parse(loop.embeddingJson) as number[];
+      } else {
+        loopEmb = await embedText(loop.title);
       }
-
-      if (!closingItemId) {
-        for (const o of recentObs) {
-          const body = `${o.windowTitle ?? ""}\n${o.text ?? ""}`;
-          const bodyL = body.toLowerCase();
-          const hit = tokens.filter((t) => bodyL.includes(t)).length;
-          if (hit < need) continue;
-          if (closePatterns.test(body)) {
-            closingObsId = o.id;
-            note = `Observation: ${o.windowTitle ?? o.app}`;
-            break;
-          }
-        }
-      }
-
-      if (
-        !closingItemId &&
-        !closingObsId &&
-        loop.kind === "deadline" &&
-        loop.dueHint
-      ) {
-        const due = Date.parse(loop.dueHint);
-        if (!Number.isNaN(due) && due < Date.now() - 2 * 86400_000) {
-          continue;
-        }
-      }
-
-      if (!closingItemId && !closingObsId) continue;
+    } catch {
+      loopEmb = null;
     }
 
+    const hits: EvidenceHit[] = [];
+
+    for (const it of recentItems) {
+      const body = `${it.title}\n${it.body ?? ""}`;
+      let score = 0;
+      if (loopEmb) {
+        try {
+          const e = await embedText(`${it.title}\n${(it.body ?? "").slice(0, 400)}`);
+          score = cosine(loopEmb, e);
+        } catch {
+          score = titleTokenOverlap(loop.title, body);
+        }
+      } else {
+        score = titleTokenOverlap(loop.title, body);
+      }
+      if (score >= 0.45) {
+        hits.push({
+          kind: "item",
+          id: it.id,
+          title: it.title,
+          body: body.slice(0, 1200),
+          score,
+        });
+      }
+    }
+
+    for (const o of recentObs) {
+      const body = `${o.windowTitle ?? ""}\n${o.text ?? ""}`;
+      let score = 0;
+      if (loopEmb) {
+        try {
+          const e = await embedText(body.slice(0, 500));
+          score = cosine(loopEmb, e);
+        } catch {
+          score = titleTokenOverlap(loop.title, body);
+        }
+      } else {
+        score = titleTokenOverlap(loop.title, body);
+      }
+      if (score >= 0.5) {
+        hits.push({
+          kind: "observation",
+          id: o.id,
+          title: o.windowTitle ?? o.app ?? "observation",
+          body: body.slice(0, 1200),
+          score,
+        });
+      }
+    }
+
+    hits.sort((a, b) => b.score - a.score);
+    const top = hits.slice(0, 4);
+    if (top.length === 0) continue;
+
+    const prompt = `LOOP_RESOLVE
+Decide if this open loop is ALREADY DONE based on recent evidence.
+
+Loop: ${JSON.stringify({
+      title: loop.title,
+      who: loop.who,
+      kind: loop.kind,
+      category: loop.category,
+      due: loop.dueAt,
+    })}
+
+Evidence candidates (may be unrelated — judge carefully):
+${JSON.stringify(
+  top.map((h, i) => ({
+    i,
+    kind: h.kind,
+    title: h.title,
+    body: h.body.slice(0, 600),
+    sim: Number(h.score.toFixed(3)),
+  })),
+)}
+
+resolved=true ONLY if evidence clearly shows the user completed this exact task
+(sent the thing, got the reply, merged the PR, paid the bill, etc.).
+Unrelated emails, browser pages, or developer IDE windows → resolved=false.
+quote = verbatim substring from evidence proving resolution (required if resolved).
+confidence 0-1. Close threshold is high — prefer false negatives.
+
+Return JSON only.`;
+
+    const res = await runLlm({
+      prompt,
+      model: "smart",
+      purpose: "loop_resolve",
+      skipHosted: true,
+      temperature: 0,
+      format: RESOLVE_SCHEMA,
+    });
+    if (res.provider === "stub") continue;
+    const parsed = parseJsonFromText<{
+      resolved?: boolean;
+      quote?: string;
+      confidence?: number;
+      reason?: string;
+    }>(res.text);
+    if (!parsed || parsed.resolved !== true) continue;
+    const conf = parsed.confidence ?? 0;
+    if (conf < 0.8) {
+      // Soft nudge — do not close
+      log.info("Loop likely done (nudge only)", {
+        loopId: loop.id,
+        title: loop.title,
+        confidence: conf,
+        reason: parsed.reason,
+      });
+      continue;
+    }
+
+    const best = top[0];
     db.update(openLoops)
       .set({
         status: "closed",
         closedAt: now,
-        closeReason,
+        closeReason: "auto_llm",
         updatedAt: now,
       })
       .where(eq(openLoops.id, loop.id))
@@ -1127,17 +1140,363 @@ export async function autoCloseLoops(): Promise<{ closed: number }> {
       .values({
         id: newId(),
         loopId: loop.id,
-        itemId: closingItemId ?? null,
-        observationId: closingObsId ?? null,
+        itemId: best.kind === "item" ? best.id : null,
+        observationId: best.kind === "observation" ? best.id : null,
         role: "closed",
-        note,
+        note: `auto_llm (${conf.toFixed(2)}): ${parsed.reason ?? ""} · quote: ${(parsed.quote ?? "").slice(0, 200)}`,
       })
       .run();
     closed++;
   }
 
-  log.info("Auto-close loops", { closed });
+  log.info("Auto-close loops (LLM judge)", { closed });
   return { closed };
+}
+
+function titleTokenOverlap(title: string, body: string): number {
+  const tokens = title
+    .toLowerCase()
+    .split(/\W+/)
+    .filter((t) => t.length > 3)
+    .slice(0, 8);
+  if (tokens.length === 0) return 0;
+  const bodyL = body.toLowerCase();
+  const hit = tokens.filter((t) => bodyL.includes(t)).length;
+  return hit / tokens.length;
+}
+
+const REVIEW_SCHEMA = {
+  type: "object",
+  properties: {
+    verdict: {
+      type: "string",
+      enum: ["still_relevant", "needs_nudge", "expired"],
+    },
+    reason: { type: "string" },
+    title: { type: "string" },
+  },
+  required: ["verdict", "reason"],
+};
+
+/**
+ * Daily aging pass: overdue or untouched 5+ days.
+ */
+export async function reviewStaleLoops(): Promise<{
+  reviewed: number;
+  expired: number;
+  rewritten: number;
+}> {
+  const db = getDb();
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const fiveDaysAgo = new Date(now.getTime() - 5 * 86_400_000).toISOString();
+
+  const open = db
+    .select()
+    .from(openLoops)
+    .all()
+    .filter((l) => l.status === "open");
+
+  let expired = 0;
+  let rewritten = 0;
+
+  // Market chatter can sit on open loops that aren't yet "stale" by age —
+  // dismiss them here so noise like "Conclude my bull run" doesn't linger.
+  for (const loop of open) {
+    if (looksLikeMarket(loop.title) || looksLikeMarket(loop.description ?? "")) {
+      db.update(openLoops)
+        .set({
+          status: "dismissed",
+          closedAt: nowIso,
+          closeReason: "stale_review:market_noise",
+          updatedAt: nowIso,
+        })
+        .where(eq(openLoops.id, loop.id))
+        .run();
+      expired++;
+    }
+  }
+
+  const stillOpen = open.filter(
+    (l) =>
+      !looksLikeMarket(l.title) && !looksLikeMarket(l.description ?? ""),
+  );
+
+  const stale = stillOpen.filter((l) => {
+    const overdue = l.dueAt && Date.parse(l.dueAt) < now.getTime();
+    const untouched =
+      (l.lastSeenAt ?? l.detectedAt) < fiveDaysAgo;
+    return overdue || untouched;
+  });
+
+  for (const loop of stale.slice(0, 30)) {
+    if (looksLikeMarket(loop.title) || looksLikeMarket(loop.description ?? "")) {
+      continue;
+    }
+
+    const prompt = `LOOP_REVIEW
+Age this open loop. Today is ${nowIso.slice(0, 10)}.
+
+Loop: ${JSON.stringify({
+      title: loop.title,
+      who: loop.who,
+      kind: loop.kind,
+      category: loop.category,
+      dueAt: loop.dueAt,
+      detectedAt: loop.detectedAt,
+      lastSeenAt: loop.lastSeenAt,
+      description: (loop.description ?? "").slice(0, 300),
+    })}
+
+verdict:
+- still_relevant — keep as-is (or lightly rewrite stale framing like "by tomorrow" when that day passed)
+- needs_nudge — still open but title should reflect overdue / waiting status
+- expired — no longer actionable (courtesy already done, opportunity gone, market noise)
+
+If rewriting, put the new title in "title" (must still name person/company + topic).
+Return JSON only.`;
+
+    const res = await runLlm({
+      prompt,
+      model: "smart",
+      purpose: "loop_review",
+      skipHosted: true,
+      temperature: 0,
+      format: REVIEW_SCHEMA,
+    });
+    if (res.provider === "stub") continue;
+    const parsed = parseJsonFromText<{
+      verdict?: string;
+      reason?: string;
+      title?: string;
+    }>(res.text);
+    if (!parsed?.verdict) continue;
+
+    if (parsed.verdict === "expired") {
+      db.update(openLoops)
+        .set({
+          status: "dismissed",
+          closedAt: nowIso,
+          closeReason: `stale_review:${parsed.reason ?? "expired"}`,
+          updatedAt: nowIso,
+        })
+        .where(eq(openLoops.id, loop.id))
+        .run();
+      expired++;
+      continue;
+    }
+
+    const nextTitle =
+      parsed.title &&
+      parsed.title.trim().length >= 12 &&
+      !isWeakLoopTitle(parsed.title, loop.who)
+        ? parsed.title.trim().slice(0, 160)
+        : null;
+    if (nextTitle && nextTitle !== loop.title) {
+      db.update(openLoops)
+        .set({
+          title: nextTitle,
+          updatedAt: nowIso,
+          lastSeenAt: nowIso,
+        })
+        .where(eq(openLoops.id, loop.id))
+        .run();
+      rewritten++;
+    } else {
+      db.update(openLoops)
+        .set({ updatedAt: nowIso })
+        .where(eq(openLoops.id, loop.id))
+        .run();
+    }
+  }
+
+  log.info("Stale loop review", {
+    reviewed: stale.length,
+    expired,
+    rewritten,
+  });
+  return { reviewed: stale.length, expired, rewritten };
+}
+
+/**
+ * One-off / boot backfill: re-extract weak open loops; reopen bad auto_evidence closes.
+ */
+export async function backfillLoopQuality(): Promise<{
+  reextracted: number;
+  reopened: number;
+}> {
+  const db = getDb();
+  const now = new Date().toISOString();
+  const since = new Date(Date.now() - 14 * 86_400_000).toISOString();
+  let reextracted = 0;
+  let reopened = 0;
+
+  // Reopen false auto_evidence closes from last 14 days when evidence looks self-generated
+  const badClosed = db
+    .select()
+    .from(openLoops)
+    .all()
+    .filter(
+      (l) =>
+        l.status === "closed" &&
+        l.closeReason === "auto_evidence" &&
+        (l.closedAt ?? "") >= since,
+    );
+
+  const allEv = db.select().from(loopEvidence).all();
+  const allObs = db.select().from(observations).all();
+
+  for (const loop of badClosed) {
+    const closeEv = allEv.find(
+      (e) => e.loopId === loop.id && e.role === "closed",
+    );
+    let reject = false;
+    if (closeEv?.observationId) {
+      const o = allObs.find((x) => x.id === closeEv.observationId);
+      if (o && isSelfGeneratedObservation(o)) reject = true;
+    }
+    if (
+      closeEv?.note &&
+      /cursor agents|graph engineering guide|intimation regarding remittance/i.test(
+        closeEv.note,
+      )
+    ) {
+      reject = true;
+    }
+    if (!reject) continue;
+    db.update(openLoops)
+      .set({
+        status: "open",
+        closedAt: null,
+        closeReason: null,
+        updatedAt: now,
+        lastSeenAt: now,
+      })
+      .where(eq(openLoops.id, loop.id))
+      .run();
+    db.insert(loopEvidence)
+      .values({
+        id: newId(),
+        loopId: loop.id,
+        role: "progressed",
+        note: "reopened: rejected auto_evidence (self/unrelated)",
+      })
+      .run();
+    reopened++;
+  }
+
+  // Re-extract currently open weak titles through new pipeline
+  const weakOpen = db
+    .select()
+    .from(openLoops)
+    .all()
+    .filter(
+      (l) =>
+        l.status === "open" && isWeakLoopTitle(l.title, l.who),
+    );
+
+  for (const loop of weakOpen.slice(0, 20)) {
+    const ev = allEv.find((e) => e.loopId === loop.id && (e.itemId || e.observationId));
+    let cand: LoopCandidate | null = null;
+    if (ev?.itemId) {
+      const it = db.select().from(items).all().find((x) => x.id === ev.itemId);
+      if (it) {
+        const mailMeta = itemMailMeta(it);
+        const classified = classifyMailLoop({
+          subject: it.title,
+          body: it.body,
+          from: it.author,
+          to: mailMeta.to,
+          labels: mailMeta.labels,
+          userEmail: readGoogleUserEmail(),
+          kind: it.kind,
+        });
+        cand = {
+          title: classified.title || loop.title,
+          description: (it.body ?? "").slice(0, 400),
+          kind: classified.kind,
+          who: classified.who ?? loop.who ?? undefined,
+          recallScore: 0.7,
+          confidence: 0.7,
+          itemId: it.id,
+          snippet: `${it.title}\n${it.body ?? ""}`.slice(0, 2500),
+          sourceUrl: it.url ?? undefined,
+          source: "item",
+          category: classified.category,
+          tags: classified.tags,
+          fromMe: classified.fromMe,
+        };
+      }
+    } else if (ev?.observationId) {
+      const o = allObs.find((x) => x.id === ev.observationId);
+      if (o) {
+        cand = {
+          title: loop.title,
+          description: (o.text ?? "").slice(0, 400),
+          kind: (loop.kind as LoopCandidate["kind"]) || "unfinished",
+          who: loop.who ?? undefined,
+          recallScore: 0.7,
+          confidence: 0.7,
+          observationId: o.id,
+          snippet: (o.text ?? "").slice(0, 2500),
+          ocrText: o.text ?? undefined,
+          source: "chat",
+          category: loop.category,
+          tags: (() => {
+            try {
+              return JSON.parse(loop.tagsJson || "[]") as string[];
+            } catch {
+              return ["chat"];
+            }
+          })(),
+        };
+      }
+    }
+    if (!cand) continue;
+    const [extracted] = await extractLoopCandidates([cand]);
+    if (!extracted || extracted.keep === false) {
+      // Weak + model says drop → dismiss
+      if (isWeakLoopTitle(loop.title, loop.who)) {
+        db.update(openLoops)
+          .set({
+            status: "dismissed",
+            closedAt: now,
+            closeReason: "backfill:not_a_task",
+            updatedAt: now,
+          })
+          .where(eq(openLoops.id, loop.id))
+          .run();
+        reextracted++;
+      }
+      continue;
+    }
+    const dueAt = extracted.dueAt ?? null;
+    db.update(openLoops)
+      .set({
+        title: extracted.title,
+        description: extracted.description ?? loop.description,
+        who: extracted.who ?? loop.who,
+        category: extracted.category ?? loop.category,
+        tagsJson: JSON.stringify(extracted.tags ?? []),
+        kind: extracted.kind,
+        confidence: extracted.confidence,
+        dueAt,
+        dueHint: null,
+        priority: computePriority({
+          dueAt,
+          kind: extracted.kind,
+          confidence: extracted.confidence,
+        }),
+        updatedAt: now,
+        lastSeenAt: now,
+      })
+      .where(eq(openLoops.id, loop.id))
+      .run();
+    reextracted++;
+  }
+
+  log.info("Loop quality backfill", { reextracted, reopened });
+  return { reextracted, reopened };
 }
 
 /** Loops closed with closeReason starting with auto_ in the last 48h */
@@ -1160,13 +1519,77 @@ export function listRecentlyAutoClosed(limit = 20) {
     .slice(0, limit);
 }
 
+function readDailyKey(key: string): string | null {
+  try {
+    const row = getDb()
+      .select()
+      .from(settings)
+      .all()
+      .find((r) => r.key === key);
+    if (!row) return null;
+    return JSON.parse(row.valueJson) as string;
+  } catch {
+    return null;
+  }
+}
+
+function writeSetting(key: string, value: unknown): void {
+  const db = getDb();
+  const valueJson = JSON.stringify(value);
+  const existing = db
+    .select()
+    .from(settings)
+    .all()
+    .find((r) => r.key === key);
+  if (existing) {
+    db.update(settings)
+      .set({ valueJson })
+      .where(eq(settings.key, key))
+      .run();
+  } else {
+    db.insert(settings).values({ key, valueJson }).run();
+  }
+}
+
+function readBackfillDone(): boolean {
+  try {
+    const row = getDb()
+      .select()
+      .from(settings)
+      .all()
+      .find((r) => r.key === "loops.aiFirstBackfillDone.v2");
+    if (!row) return false;
+    return JSON.parse(row.valueJson) === true;
+  } catch {
+    return false;
+  }
+}
+
+function markBackfillDone(): void {
+  writeSetting("loops.aiFirstBackfillDone.v2", true);
+}
+
 export async function runLoopsPipeline(): Promise<{
   detect: { candidates: number; created: number; updated: number };
   close: { closed: number };
+  review?: { reviewed: number; expired: number; rewritten: number };
+  backfill?: { reextracted: number; reopened: number };
 }> {
+  let backfill: { reextracted: number; reopened: number } | undefined;
+  if (!readBackfillDone()) {
+    backfill = await backfillLoopQuality();
+    markBackfillDone();
+  }
   const detect = await detectOpenLoops();
   const close = await autoCloseLoops();
-  return { detect, close };
+
+  let review: { reviewed: number; expired: number; rewritten: number } | undefined;
+  const today = new Date().toISOString().slice(0, 10);
+  if (readDailyKey("loops.lastStaleReviewDay") !== today) {
+    review = await reviewStaleLoops();
+    writeSetting("loops.lastStaleReviewDay", today);
+  }
+  return { detect, close, review, backfill };
 }
 
 export async function generateDigest(): Promise<string> {
@@ -1194,3 +1617,6 @@ ${JSON.stringify(
   const res = await runLlm({ prompt, model: "smart" });
   return res.text;
 }
+
+// Re-export category type for callers
+export type { LoopCategory };

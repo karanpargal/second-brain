@@ -8,6 +8,18 @@ Ask: if this is a personal AI on the desktop, does the surface feel like that �
 
 ## Log
 
+## Run 2026-08-20 — Cartesia voice + personal brain
+
+**What:** Style check on widget mic + Ask thread + Settings Voice.
+
+**Why:** Primary UX must stay floating widget; no terminal/npm path for voice.
+
+**Evidence:** Mic in widget footer next to “Ask your agent…”. Thread shows You/Agent. Settings privacy one-liner. Overflow Ask page mirrors. Desktop still owns core lifecycle; `apiVersion` 11.
+
+**Verdicts:** KEEP. Mic emoji is fine for compact widget; not SaaS. No “run npm for voice.”
+
+---
+
 ## Run 2026-08-18 — Improve coach re-audit
 
 **What:** Style-only re-audit of U01–U15 after the coach copy shipped. Read north star, one-click law, planner/worker 2026-08-18, `features.md`; inspected WidgetPage Improve (cards, Track, I want to learn, Generate, tracking list, empty state, voice fallback), `insights.ts` titles/bodies/`insightVoice`, `INSIGHT_KIND_LABEL`. Did not implement.

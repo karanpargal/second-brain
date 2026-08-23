@@ -118,10 +118,53 @@ export const api = {
     }>("/api/tracking-rules"),
   deleteSpamRule: (id: string) =>
     req(`/api/tracking-rules/${id}`, { method: "DELETE" }),
-  ask: (question: string) =>
+  ask: (question: string, sessionId?: string) =>
     req<AskResult>("/api/ask", {
       method: "POST",
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, sessionId }),
+    }),
+  askVoice: (body: {
+    audioBase64: string;
+    mimeType?: string;
+    sessionId?: string;
+  }) =>
+    req<AskVoiceResult>("/api/ask/voice", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  voiceStatus: () =>
+    req<{ configured: boolean }>("/api/ask/voice-status"),
+  saveCartesiaKey: (apiKey: string) =>
+    req<{ ok: boolean; configured?: boolean; error?: string }>(
+      "/api/settings/cartesia",
+      {
+        method: "POST",
+        body: JSON.stringify({ apiKey }),
+      },
+    ),
+  hostedLlmStatus: () =>
+    req<{
+      url: string;
+      model: string;
+      useForAsk: boolean;
+      configured: boolean;
+      fromEnv: boolean;
+    }>("/api/settings/hosted-llm"),
+  saveHostedLlm: (body: {
+    url?: string;
+    model?: string;
+    apiKey?: string;
+    useForAsk?: boolean;
+  }) =>
+    req<{
+      url: string;
+      model: string;
+      useForAsk: boolean;
+      configured: boolean;
+      fromEnv: boolean;
+    }>("/api/settings/hosted-llm", {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
   search: (q: string) =>
     req<{ hits: SearchHit[] }>(`/api/search?q=${encodeURIComponent(q)}`),
@@ -181,6 +224,53 @@ export const api = {
     ),
   dismissInsight: (id: string) =>
     req<{ ok: boolean }>(`/api/insights/${id}`, { method: "DELETE" }),
+  runAdvisor: () =>
+    req<{
+      cards: Insight[];
+      toolCalls: number;
+      mcpServers: number;
+      mcpTools: number;
+      errors: string[];
+    }>("/api/advisor/run", { method: "POST" }),
+  listMcpServers: () =>
+    req<{
+      servers: Array<{
+        id: string;
+        label: string;
+        transport: "stdio" | "http";
+        command?: string;
+        args?: string[];
+        url?: string;
+        enabled: boolean;
+        secretKeys?: string[];
+      }>;
+    }>("/api/mcp/servers"),
+  saveMcpServer: (body: {
+    id: string;
+    label?: string;
+    transport?: "stdio" | "http";
+    command?: string;
+    args?: string[];
+    url?: string;
+    enabled?: boolean;
+    secretKeys?: string[];
+    secrets?: Record<string, string>;
+  }) =>
+    req<{ ok: boolean; server: unknown }>("/api/mcp/servers", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  testMcpServer: (id: string) =>
+    req<{
+      ok: boolean;
+      tools?: Array<{ name: string; description?: string; readOnly: boolean }>;
+      readOnly?: string[];
+      error?: string;
+    }>(`/api/mcp/servers/${encodeURIComponent(id)}/test`, { method: "POST" }),
+  deleteMcpServer: (id: string) =>
+    req<{ servers: unknown[] }>(`/api/mcp/servers/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
   buckets: () =>
     req<{
       urgent: OpenLoop[];
@@ -230,6 +320,15 @@ export type Insight = {
   topic?: string;
   suggestions?: InsightSuggestion[];
   ollamaOffline?: boolean;
+  nextStep?: string;
+  effortMin?: number;
+  sources?: Array<{
+    server: string;
+    tool: string;
+    ref: string;
+    url?: string;
+  }>;
+  confidence?: number;
 };
 
 export type UserProfile = {
@@ -324,6 +423,13 @@ export type TimelinePayload = {
 export type AskResult = {
   answer: string;
   sources: Array<{ text: string; score: number }>;
+  sessionId: string;
+};
+
+export type AskVoiceResult = AskResult & {
+  transcript: string;
+  audioBase64: string;
+  audioMime: string;
 };
 
 export type SearchHit = {
@@ -378,14 +484,35 @@ export type GithubStatus = {
 export type Health = {
   ok: boolean;
   dataDir: string;
+  apiVersion?: number;
   google?: {
     connected: boolean;
     hasRefresh: boolean;
     expiry?: number | null;
     needsReauth?: boolean;
     lastError?: string | null;
+    lastRunAt?: string | null;
+    gcalLastRunAt?: string | null;
+    gcalLastError?: string | null;
   };
-  github?: GithubStatus & { lastError?: string | null };
+  github?: GithubStatus & {
+    lastError?: string | null;
+    lastRunAt?: string | null;
+  };
+  mcp?: Array<{
+    id: string;
+    label: string;
+    enabled: boolean;
+    transport: string;
+  }>;
+  sources?: Array<{
+    id: string;
+    kind: string;
+    name: string;
+    enabled: boolean;
+    lastRunAt?: string | null;
+    lastError?: string | null;
+  }>;
   ollama: { ok: boolean; models: string[] };
   spool: { files: number; bytes: number };
 };

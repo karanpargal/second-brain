@@ -8,6 +8,23 @@ For each relevant feature: attack/privacy story, whether the north-star personal
 
 ## Log
 
+## Run 2026-08-20 — Cartesia voice + personal brain
+
+**What:** Security lens on Cartesia voice Ask (V01–V06).
+
+**Why:** Speech leaves the machine to Cartesia; key handling and webview exposure matter.
+
+**Evidence:**
+- Key via `setSecret("cartesia_api_key")` — not returned by `voice-status` (`configured` only).
+- Core proxies STT/TTS; SPA never sees the key.
+- Push-to-talk (not always-on) — audio only on explicit mic send.
+- Audio not written to disk in cartesia/ask paths.
+- Auth still required on `/api/ask/voice` and `/api/settings/cartesia`.
+
+**Verdicts:** No shipping blocker. Note: speech content goes to Cartesia (documented in Settings). KEEP with privacy copy.
+
+---
+
 ## Run 2026-08-18 — Improve coach re-audit
 
 **What:** Privacy/auth re-audit of U01–U15 (Improve coach after the 2026-08-13 implementer guide landed). Did not restyle, did not implement, did not rewrite `output.md`. Question: does topic extract, local Ollama suggestions, https open, Track, and apiVersion 6 ship without hosted LLM of history, without Gmail/Friends on cards, and without unsanitized `shell.open`.

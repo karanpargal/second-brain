@@ -139,6 +139,46 @@ fn place_bottom_right(app: &AppHandle) {
     }
 }
 
+/// Allow microphone for the local core widget (Cartesia push-to-talk).
+#[cfg(windows)]
+fn allow_widget_microphone(win: &tauri::WebviewWindow) {
+    let _ = win.with_webview(|webview| {
+        use webview2_com::{
+            Microsoft::Web::WebView2::Win32::{
+                COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
+                COREWEBVIEW2_PERMISSION_STATE_ALLOW,
+            },
+            PermissionRequestedEventHandler,
+        };
+
+        unsafe {
+            let controller = webview.controller();
+            let Ok(core) = controller.CoreWebView2() else {
+                return;
+            };
+
+            let mut token = 0i64;
+            let _ = core.add_PermissionRequested(
+                &PermissionRequestedEventHandler::create(Box::new(|_, args| {
+                    let Some(args) = args else {
+                        return Ok(());
+                    };
+                    let mut kind = Default::default();
+                    args.PermissionKind(&mut kind)?;
+                    if kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE {
+                        args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
+                    }
+                    Ok(())
+                })),
+                &mut token,
+            );
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn allow_widget_microphone(_win: &tauri::WebviewWindow) {}
+
 /// Percent-encode so an HTML string can ride inside a `data:` URL that
 /// `tauri::Url::parse` accepts (spaces, quotes, and `<`/`>` would break it).
 fn pct(s: &str) -> String {
@@ -236,6 +276,7 @@ fn main() {
                     let _ = win.navigate(url);
                 }
                 place_bottom_right(app.handle());
+                allow_widget_microphone(&win);
             }
 
             let show_i = MenuItem::with_id(app, "show", "Show widget", true, None::<&str>)?;
@@ -392,7 +433,7 @@ fn main() {
 
                 let ok = result.is_ok();
                 let target = if ok {
-                    format!("{}/widget?v=20260813c", core::core_url())
+                    format!("{}/widget?v=20260823d", core::core_url())
                 } else {
                     error_url()
                 };
@@ -405,6 +446,7 @@ fn main() {
                             let _ = win
                                 .eval(&format!(r#"window.location.replace("{}");"#, target));
                         }
+                        allow_widget_microphone(&win);
                     }
                 });
             });

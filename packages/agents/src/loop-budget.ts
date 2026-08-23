@@ -1,11 +1,12 @@
 /**
  * Budget Ollama calls for loop structuring so we don't thrash local VRAM/CPU.
+ * Defaults are effectively uncapped for AI-first quality; settings still override.
  */
 
 import { getDb, settings, usageEvents, log } from "@second-brain/core";
 
-const DEFAULT_MAX_PER_RUN = 40;
-const DEFAULT_MAX_PER_DAY = 200;
+const DEFAULT_MAX_PER_RUN = 400;
+const DEFAULT_MAX_PER_DAY = 2000;
 
 function readSettingNumber(key: string, fallback: number): number {
   try {
@@ -39,6 +40,11 @@ export function getLoopLlmBudget(): {
         const meta = JSON.parse(e.metaJson || "{}") as { purpose?: string };
         return (
           meta.purpose === "structure_loops" ||
+          meta.purpose === "loop_extract" ||
+          meta.purpose === "loop_repair" ||
+          meta.purpose === "loop_dedupe" ||
+          meta.purpose === "loop_resolve" ||
+          meta.purpose === "loop_review" ||
           meta.purpose === "polish_chat" ||
           e.kind === "loop-structure"
         );
@@ -65,4 +71,16 @@ export function llmSlotsForThisRun(): number {
     });
   }
   return slots;
+}
+
+/** Serial queue so loop LLM calls never overlap (one resident model). */
+let queueTail: Promise<unknown> = Promise.resolve();
+
+export function enqueueLlm<T>(fn: () => Promise<T>): Promise<T> {
+  const run = queueTail.then(fn, fn);
+  queueTail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }

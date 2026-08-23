@@ -4,7 +4,11 @@
  * Exact title match is not enough: the LLM rewrites subjects into different
  * action lines ("Update billing information…" vs "update billing info") and
  * Gmail threads produce one item per message.
+ *
+ * For the ambiguous cosine band (roughly 0.6–0.85), call adjudicateSameTask().
  */
+
+import { parseJsonFromText, runLlm } from "./llm.js";
 
 const STOP = new Set([
   "the",
@@ -63,6 +67,10 @@ export type DedupeInput = {
   sourceUrl?: string | null;
   itemId?: string | null;
 };
+
+/** Cosine bands for embedding dedupe */
+export const DEDUPE_COSINE_MERGE = 0.85;
+export const DEDUPE_COSINE_BORDER_LOW = 0.6;
 
 export function normalizeTitle(s: string): string {
   return s
@@ -195,4 +203,64 @@ export function loopsAreDuplicate(a: DedupeInput, b: DedupeInput): boolean {
   if (overlap >= 3 && sim >= 0.28) return true;
 
   return false;
+}
+
+const DEDUPE_SCHEMA = {
+  type: "object",
+  properties: {
+    same_task: { type: "boolean" },
+    reason: { type: "string" },
+  },
+  required: ["same_task", "reason"],
+};
+
+/**
+ * LLM adjudicator for borderline embedding similarity (0.6–0.85).
+ * Cheap paths (thread key, high cosine, Jaccard) should short-circuit first.
+ */
+export async function adjudicateSameTask(
+  a: DedupeInput & { description?: string | null },
+  b: DedupeInput & { description?: string | null },
+  cosine?: number,
+): Promise<{ sameTask: boolean; reason: string }> {
+  const prompt = `LOOP_DEDUPE
+Decide if these two open-loop cards are the SAME unfinished task for the user.
+
+A: ${JSON.stringify({
+    title: a.title,
+    who: a.who ?? null,
+    url: a.sourceUrl ?? null,
+    description: (a.description ?? "").slice(0, 200),
+  })}
+B: ${JSON.stringify({
+    title: b.title,
+    who: b.who ?? null,
+    url: b.sourceUrl ?? null,
+    description: (b.description ?? "").slice(0, 200),
+  })}
+embedding_cosine: ${cosine ?? "n/a"}
+
+same_task=true only if acting on one completes the other (same person/company + same ask).
+Different companies, different roles, or different asks → false.
+Return JSON only.`;
+
+  const res = await runLlm({
+    prompt,
+    model: "smart",
+    purpose: "loop_dedupe",
+    skipHosted: true,
+    temperature: 0,
+    format: DEDUPE_SCHEMA,
+  });
+  if (res.provider === "stub") {
+    return { sameTask: false, reason: "stub" };
+  }
+  const parsed = parseJsonFromText<{ same_task?: boolean; reason?: string }>(
+    res.text,
+  );
+  if (!parsed) return { sameTask: false, reason: "parse_fail" };
+  return {
+    sameTask: parsed.same_task === true,
+    reason: parsed.reason ?? "",
+  };
 }

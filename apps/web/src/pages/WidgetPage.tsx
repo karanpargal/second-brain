@@ -1,11 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { api, type Insight, type OpenLoop } from "../lib/api";
+import { api, type Health, type Insight, type OpenLoop } from "../lib/api";
+import {
+  blobToBase64,
+  getAskSessionId,
+  MIN_VOICE_MS,
+  MIN_VOICE_PEAK,
+  playAskAudioBase64,
+  setAskSessionId,
+  startVoiceSession,
+  stopAskAudio,
+  voiceErrorHint,
+  type AskThreadTurn,
+  type VoiceSession,
+} from "../lib/ask-voice";
 import clsx from "clsx";
 
 type Filter =
   | "today"
   | "todo"
   | "improve"
+  | "ask"
   | "open"
   | "resolved"
   | "all"
@@ -18,7 +32,14 @@ type Filter =
 
 type SourceFilter = Exclude<
   Filter,
-  "today" | "todo" | "improve" | "open" | "resolved" | "all" | "urgent"
+  | "today"
+  | "todo"
+  | "improve"
+  | "ask"
+  | "open"
+  | "resolved"
+  | "all"
+  | "urgent"
 >;
 
 function relativeTime(iso: string): string {
@@ -35,6 +56,59 @@ function relativeTime(iso: string): string {
     day: "numeric",
     month: "short",
   });
+}
+
+function startOfLocalDay(d: Date): Date {
+  const out = new Date(d);
+  out.setHours(0, 0, 0, 0);
+  return out;
+}
+
+/** Human-friendly due from dueAt — never print raw ISO / "soon". */
+function formatDue(dueAt?: string | null): {
+  label: string;
+  overdue: boolean;
+} | null {
+  if (!dueAt) return null;
+  const ms = Date.parse(dueAt);
+  if (Number.isNaN(ms)) return null;
+  const dueDay = startOfLocalDay(new Date(ms));
+  const today = startOfLocalDay(new Date());
+  const daysUntil = Math.round(
+    (dueDay.getTime() - today.getTime()) / 86_400_000,
+  );
+  if (daysUntil < 0) {
+    const n = Math.abs(daysUntil);
+    return {
+      label: n === 1 ? "Overdue by 1 day" : `Overdue by ${n} days`,
+      overdue: true,
+    };
+  }
+  if (daysUntil === 0) return { label: "Due today", overdue: false };
+  if (daysUntil === 1) return { label: "Due tomorrow", overdue: false };
+  if (daysUntil < 7) {
+    const weekday = dueDay.toLocaleDateString(undefined, { weekday: "short" });
+    const day = dueDay.getDate();
+    const month = dueDay.toLocaleDateString(undefined, { month: "short" });
+    return { label: `Due ${weekday} ${day} ${month}`, overdue: false };
+  }
+  const day = dueDay.getDate();
+  const month = dueDay.toLocaleDateString(undefined, { month: "short" });
+  return { label: `Due ${day} ${month}`, overdue: false };
+}
+
+/** Person/company only — hide job-title strings that used to leak into who. */
+function displayWho(who?: string | null): string | null {
+  if (!who) return null;
+  const s = who.trim();
+  if (s.length < 2) return null;
+  if (
+    /\b(senior|junior|engineer|bengaluru|bangalore|role|position)\b/i.test(s) &&
+    s.includes("/")
+  ) {
+    return null;
+  }
+  return s;
 }
 
 function isTodayIso(iso?: string | null): boolean {
@@ -144,9 +218,23 @@ function insightKindLabel(kind: string): string {
       return "Learn";
     case "progress":
       return "Progress";
+    case "action":
+      return "Do this";
     default:
       return kind.replace(/_/g, " ");
   }
+}
+
+function relativeAgo(iso?: string | null): string {
+  if (!iso) return "never";
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return "unknown";
+  const mins = Math.round((Date.now() - ms) / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 36) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
 }
 
 function isHttpsUrl(url: string): boolean {
@@ -204,6 +292,8 @@ function viewBadge(id: Filter): string {
       return "TO";
     case "improve":
       return "↑";
+    case "ask":
+      return "AI";
     case "open":
       return "OP";
     case "resolved":
@@ -214,6 +304,8 @@ function viewBadge(id: Filter): string {
       return "M";
     case "github":
       return "GH";
+    case "chat":
+      return "CH";
     case "manual":
       return "·";
     case "all":
@@ -390,11 +482,18 @@ export function WidgetPage() {
   const [connectMsg, setConnectMsg] = useState<string | null>(null);
   const [googleOk, setGoogleOk] = useState<boolean | null>(null);
   const [githubOk, setGithubOk] = useState<boolean | null>(null);
+  const [healthInfo, setHealthInfo] = useState<Health | null>(null);
   const [voice, setVoice] = useState<string | null>(null);
   const [learnWant, setLearnWant] = useState("");
   const [askQ, setAskQ] = useState("");
-  const [askAnswer, setAskAnswer] = useState<string | null>(null);
+  const [askThread, setAskThread] = useState<AskThreadTurn[]>([]);
   const [askBusy, setAskBusy] = useState(false);
+  const [voiceReady, setVoiceReady] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [askHint, setAskHint] = useState<string | null>(null);
+  const [micLevel, setMicLevel] = useState(0);
+  const voiceSessionRef = useRef<VoiceSession | null>(null);
+  const sendingVoiceRef = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -440,6 +539,7 @@ export function WidgetPage() {
       setUpdatedAt(new Date());
       setErr(null);
       if (health) {
+        setHealthInfo(health);
         setGoogleOk(
           Boolean(health.google?.connected) && !health.google?.needsReauth,
         );
@@ -506,7 +606,7 @@ export function WidgetPage() {
     if (filter === "resolved") {
       return closed;
     }
-    if (filter === "improve") {
+    if (filter === "improve" || filter === "ask") {
       return [];
     }
     const base = open;
@@ -521,7 +621,9 @@ export function WidgetPage() {
 
   const showingResolved = filter === "resolved";
   const showingImprove = filter === "improve";
-  const showingOpenEmpty = !showingResolved && !showingImprove && open.length === 0;
+  const showingAsk = filter === "ask";
+  const showingOpenEmpty =
+    !showingResolved && !showingImprove && !showingAsk && open.length === 0;
   const trackingLearn = open.filter(isUpskillLoop);
 
   const trackTopic = async (body: { insightId?: string; topic?: string }) => {
@@ -645,19 +747,140 @@ export function WidgetPage() {
     }
   };
 
+  useEffect(() => {
+    void api
+      .voiceStatus()
+      .then((r) => setVoiceReady(!!r.configured))
+      .catch(() => setVoiceReady(false));
+    return () => {
+      stopAskAudio();
+      void voiceSessionRef.current?.stop();
+    };
+  }, []);
+
+  const pushTurns = (userText: string, assistantText: string) => {
+    setAskThread((prev) => [
+      ...prev.slice(-40),
+      { id: `u-${Date.now()}`, role: "user", text: userText },
+      { id: `a-${Date.now()}`, role: "assistant", text: assistantText },
+    ]);
+  };
+
   const submitAsk = async (e?: { preventDefault(): void }) => {
     e?.preventDefault();
     const q = askQ.trim() || "What should I focus on right now?";
     setAskBusy(true);
-    setAskAnswer(null);
+    setAskHint(null);
+    stopAskAudio();
     try {
-      const r = await api.ask(q);
-      setAskAnswer(r.answer);
+      const r = await api.ask(q, getAskSessionId());
+      setAskSessionId(r.sessionId);
+      pushTurns(q, r.answer);
       setAskQ("");
+      setFilter("ask");
     } catch (err) {
-      setAskAnswer(err instanceof Error ? err.message : String(err));
+      setAskHint(err instanceof Error ? err.message : String(err));
     } finally {
       setAskBusy(false);
+    }
+  };
+
+  const cleanupMic = () => {
+    voiceSessionRef.current = null;
+    setMicLevel(0);
+    setRecording(false);
+  };
+
+  const stopRecordingAndSend = async () => {
+    if (sendingVoiceRef.current) return;
+    const session = voiceSessionRef.current;
+    if (!session) {
+      cleanupMic();
+      return;
+    }
+    sendingVoiceRef.current = true;
+    let clip: { blob: Blob; mimeType: string; durationMs: number; peak: number };
+    try {
+      clip = await session.stop();
+    } catch {
+      cleanupMic();
+      sendingVoiceRef.current = false;
+      setAskHint("Could not finish the recording — try again.");
+      return;
+    }
+    cleanupMic();
+
+    if (clip.durationMs < MIN_VOICE_MS) {
+      setAskHint("Press and hold Mic while you speak, then release.");
+      sendingVoiceRef.current = false;
+      return;
+    }
+    if (clip.peak < MIN_VOICE_PEAK) {
+      setAskHint(
+        "No speech in the clip (level bar stayed flat). Check Windows mic privacy for Second Brain, then hold Mic and watch the bar bounce.",
+      );
+      sendingVoiceRef.current = false;
+      return;
+    }
+    setAskBusy(true);
+    setAskHint(null);
+    stopAskAudio();
+    try {
+      const audioBase64 = await blobToBase64(clip.blob);
+      const r = await api.askVoice({
+        audioBase64,
+        mimeType: clip.mimeType,
+        sessionId: getAskSessionId(),
+      });
+      setAskSessionId(r.sessionId);
+      pushTurns(r.transcript, r.answer);
+      if (r.audioBase64) playAskAudioBase64(r.audioBase64, r.audioMime);
+      if (filter !== "ask") {
+        setAskHint("Answer playing — full chat is in Ask.");
+        window.setTimeout(() => setAskHint(null), 4500);
+      }
+    } catch (err) {
+      setAskHint(voiceErrorHint(err));
+    } finally {
+      setAskBusy(false);
+      sendingVoiceRef.current = false;
+    }
+  };
+
+  const startRecording = async () => {
+    if (askBusy || recording || sendingVoiceRef.current) return;
+    if (!voiceReady) {
+      setAskHint("Add a Cartesia API key in Settings → Voice to talk.");
+      return;
+    }
+    setAskHint("Listening… release Mic when done.");
+    stopAskAudio();
+    try {
+      const session = await startVoiceSession(setMicLevel);
+      voiceSessionRef.current = session;
+      setRecording(true);
+    } catch (err) {
+      cleanupMic();
+      setAskHint(
+        err instanceof Error
+          ? `Microphone blocked: ${err.message}`
+          : "Microphone unavailable",
+      );
+    }
+  };
+
+  const onMicPointerDown = (e: ReactPointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    void startRecording();
+  };
+
+  const onMicPointerUp = (e: ReactPointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (recording || voiceSessionRef.current) {
+      void stopRecordingAndSend();
     }
   };
 
@@ -712,6 +935,13 @@ export function WidgetPage() {
           hint: "Learn from last week's searches",
           count: insights.length,
           tone: "bg-violet-600 text-white",
+        },
+        {
+          id: "ask",
+          title: "Ask",
+          hint: "Voice + text chat with your agent",
+          count: askThread.filter((t) => t.role === "user").length || undefined,
+          tone: "bg-sky-600 text-white",
         },
         {
           id: "open",
@@ -837,7 +1067,7 @@ export function WidgetPage() {
                   ···
                 </button>
                 {menu && (
-                  <div className="absolute right-0 z-20 mt-1 w-40 overflow-hidden rounded-xl bg-white py-1 text-[12px] shadow-lg ring-1 ring-black/10">
+                  <div className="absolute right-0 z-20 mt-1 w-52 overflow-hidden rounded-xl bg-white py-1 text-[12px] shadow-lg ring-1 ring-black/10">
                     <button
                       type="button"
                       className="block w-full px-3 py-2 text-left hover:bg-zinc-50"
@@ -850,24 +1080,64 @@ export function WidgetPage() {
                     </button>
                     <button
                       type="button"
-                      className="block w-full px-3 py-2 text-left hover:bg-zinc-50"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-50"
                       onClick={() => {
                         setMenu(false);
                         void runConnectGoogle();
                       }}
                     >
-                      Connect Google
+                      <span
+                        className={`inline-block h-1.5 w-1.5 rounded-full ${
+                          googleOk
+                            ? "bg-emerald-500"
+                            : healthInfo?.google?.needsReauth
+                              ? "bg-amber-500"
+                              : "bg-zinc-300"
+                        }`}
+                      />
+                      <span className="min-w-0 flex-1 truncate">
+                        {googleOk
+                          ? `Google · synced ${relativeAgo(healthInfo?.google?.lastRunAt)}`
+                          : healthInfo?.google?.needsReauth
+                            ? "Google · reconnect needed"
+                            : "Connect Google"}
+                      </span>
                     </button>
                     <button
                       type="button"
-                      className="block w-full px-3 py-2 text-left hover:bg-zinc-50"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-50"
                       onClick={() => {
                         setMenu(false);
                         void runConnectGithub();
                       }}
                     >
-                      Connect GitHub
+                      <span
+                        className={`inline-block h-1.5 w-1.5 rounded-full ${
+                          githubOk ? "bg-emerald-500" : "bg-zinc-300"
+                        }`}
+                      />
+                      <span className="min-w-0 flex-1 truncate">
+                        {githubOk
+                          ? `GitHub · synced ${relativeAgo(healthInfo?.github?.lastRunAt)}`
+                          : "Connect GitHub"}
+                      </span>
                     </button>
+                    {(healthInfo?.mcp ?? []).map((s) => (
+                      <div
+                        key={s.id}
+                        className="flex items-center gap-2 px-3 py-1.5 text-left text-zinc-600"
+                      >
+                        <span
+                          className={`inline-block h-1.5 w-1.5 rounded-full ${
+                            s.enabled ? "bg-sky-500" : "bg-zinc-300"
+                          }`}
+                        />
+                        <span className="truncate">
+                          {s.label}
+                          {s.enabled ? "" : " · off"}
+                        </span>
+                      </div>
+                    ))}
                     <button
                       type="button"
                       className="block w-full px-3 py-2 text-left hover:bg-zinc-50"
@@ -1059,14 +1329,57 @@ export function WidgetPage() {
               Loading…
             </div>
           )}
-          {!loading && !err && voice && (
+          {!loading && !err && voice && !showingAsk && (
             <div className="rounded-2xl bg-zinc-950 px-3.5 py-3 text-[13px] leading-relaxed text-white">
               {voice}
             </div>
           )}
-          {askAnswer && (
-            <div className="rounded-2xl bg-white px-3.5 py-3 text-[13px] leading-relaxed text-zinc-800 ring-1 ring-black/5">
-              {askAnswer}
+          {askHint && (
+            <div className="rounded-xl bg-amber-50 px-3 py-2 text-[11px] text-amber-800 ring-1 ring-amber-100">
+              {askHint}
+            </div>
+          )}
+          {showingAsk && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2 px-0.5">
+                <p className="text-[11px] text-zinc-500">
+                  Mic answers play aloud; transcript lives here so loops stay
+                  clear.
+                </p>
+                {askThread.length > 0 && (
+                  <button
+                    type="button"
+                    className="shrink-0 rounded-lg bg-zinc-100 px-2 py-1 text-[11px] font-medium text-zinc-600"
+                    onClick={() => setAskThread([])}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              {askThread.length === 0 ? (
+                <div className="rounded-2xl bg-white px-4 py-8 text-center text-[13px] text-zinc-500 ring-1 ring-black/5">
+                  Ask anything about your day, loops, or memory. Press and hold{" "}
+                  <span className="font-medium text-zinc-700">Mic</span>, speak,
+                  then release — you&apos;ll hear the reply.
+                </div>
+              ) : (
+                askThread.map((t) => (
+                  <div
+                    key={t.id}
+                    className={clsx(
+                      "rounded-2xl px-3.5 py-2.5 text-[13px] leading-relaxed ring-1",
+                      t.role === "user"
+                        ? "bg-zinc-100 text-zinc-700 ring-black/5"
+                        : "bg-white text-zinc-800 ring-black/5",
+                    )}
+                  >
+                    <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
+                      {t.role === "user" ? "You" : "Agent"}
+                    </div>
+                    {t.text}
+                  </div>
+                ))
+              )}
             </div>
           )}
           {err && (
@@ -1116,17 +1429,18 @@ export function WidgetPage() {
                   {busy === "sync" ? "Syncing…" : "Sync now"}
                 </button>
               </div>
-              {connectMsg && (
-                <div className="mt-3 text-left text-[11px] leading-relaxed text-zinc-600">
-                  {connectMsg}
-                </div>
-              )}
+            </div>
+          )}
+          {connectMsg && (
+            <div className="rounded-xl bg-emerald-50 px-3 py-2 text-[11px] leading-relaxed text-emerald-900 ring-1 ring-emerald-100">
+              {connectMsg}
             </div>
           )}
           {!loading &&
             !err &&
             !showingResolved &&
             !showingImprove &&
+            !showingAsk &&
             !showingOpenEmpty &&
             filtered.length === 0 && (
               <div className="rounded-2xl bg-white px-4 py-8 text-center text-[13px] text-zinc-500 ring-1 ring-black/5">
@@ -1157,8 +1471,42 @@ export function WidgetPage() {
                   {ins.title}
                 </h3>
                 <p className="mt-1 text-[12px] leading-relaxed text-zinc-600">
-                  {ins.body}
+                  {ins.kind === "action" && ins.nextStep
+                    ? ins.body.split("\n\nNext:")[0] ?? ins.body
+                    : ins.body}
                 </p>
+                {ins.kind === "action" && ins.nextStep && (
+                  <p className="mt-2 rounded-lg bg-violet-50 px-2.5 py-1.5 text-[12px] text-violet-950">
+                    <span className="font-semibold">Next: </span>
+                    {ins.nextStep}
+                    {ins.effortMin ? (
+                      <span className="ml-1 text-violet-600">
+                        · ~{ins.effortMin}m
+                      </span>
+                    ) : null}
+                  </p>
+                )}
+                {ins.kind === "action" && (ins.sources ?? []).length > 0 && (
+                  <ul className="mt-1.5 space-y-1">
+                    {ins.sources!.slice(0, 3).map((s, i) => (
+                      <li key={`${s.server}-${s.tool}-${i}`}>
+                        {s.url && isHttpsUrl(s.url) ? (
+                          <button
+                            type="button"
+                            className="text-[11px] text-violet-700 underline-offset-2 hover:underline"
+                            onClick={() => void openExternal(s.url!)}
+                          >
+                            {s.server}/{s.tool}: {s.ref}
+                          </button>
+                        ) : (
+                          <span className="text-[11px] text-zinc-500">
+                            {s.server}/{s.tool}: {s.ref}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 {(ins.suggestions ?? []).length > 0 && (
                   <ul className="mt-2 space-y-1.5">
                     {ins.suggestions!.map((s) => (
@@ -1198,6 +1546,35 @@ export function WidgetPage() {
                       )
                         ? "Tracking"
                         : "Track this"}
+                    </button>
+                  )}
+                  {ins.kind === "action" && (
+                    <button
+                      type="button"
+                      className="rounded-lg bg-violet-600 px-2.5 py-1 text-[11px] font-medium text-white"
+                      disabled={busy === `add-loop:${ins.id}`}
+                      onClick={() => {
+                        setBusy(`add-loop:${ins.id}`);
+                        void api
+                          .createLoop({
+                            title: ins.title,
+                            description: [
+                              ins.nextStep ? `Next: ${ins.nextStep}` : null,
+                              ins.body,
+                            ]
+                              .filter(Boolean)
+                              .join("\n\n"),
+                            kind: "unfinished",
+                            tags: ["advisor"],
+                            category: "other",
+                          })
+                          .then(() => api.dismissInsight(ins.id))
+                          .then(() => load())
+                          .catch((e) => setConnectMsg(String(e)))
+                          .finally(() => setBusy(null));
+                      }}
+                    >
+                      {busy === `add-loop:${ins.id}` ? "Adding…" : "Add as loop"}
                     </button>
                   )}
                   <button
@@ -1297,47 +1674,64 @@ export function WidgetPage() {
             </form>
           )}
 
-          {showingImprove && !loading && insights.length > 0 && (
-            <button
-              type="button"
-              className="rounded-2xl bg-white px-4 py-3 text-center text-[12px] font-medium text-violet-700 ring-1 ring-violet-200/60"
-              disabled={busy === "insights"}
-              onClick={async () => {
-                setBusy("insights");
-                try {
-                  await api.generateInsights();
-                  await load();
-                } finally {
-                  setBusy(null);
-                }
-              }}
-            >
-              {busy === "insights" ? "Refreshing…" : "Refresh insights"}
-            </button>
-          )}
-
-          {showingImprove && !loading && insights.length === 0 && (
-            <div className="rounded-2xl bg-white px-4 py-8 text-center text-[13px] text-zinc-500 ring-1 ring-black/5">
-              I'll look at what you searched last week.
+          {showingImprove && !loading && (
+            <div className="flex flex-col gap-2">
               <button
                 type="button"
-                className="mt-3 rounded-xl bg-violet-600 px-3 py-2 text-[12px] font-medium text-white"
+                className="rounded-2xl bg-violet-600 px-4 py-3 text-center text-[12px] font-medium text-white"
+                disabled={busy === "advisor" || busy === "insights"}
                 onClick={async () => {
-                  setBusy("insights");
+                  setBusy("advisor");
+                  setConnectMsg(null);
                   try {
-                    await api.generateInsights();
+                    const r = await api.runAdvisor();
+                    setConnectMsg(
+                      r.cards.length
+                        ? `Advisor: ${r.cards.length} action card${r.cards.length === 1 ? "" : "s"} (${r.mcpTools} MCP tools).`
+                        : r.errors[0] ??
+                            "Advisor ran — no new action cards this time.",
+                    );
                     await load();
+                  } catch (e) {
+                    setConnectMsg(String(e));
                   } finally {
                     setBusy(null);
                   }
                 }}
               >
-                {busy === "insights" ? "Generating…" : "Generate now"}
+                {busy === "advisor" ? "Advising…" : "Get advice"}
               </button>
+              {insights.length > 0 && (
+                <button
+                  type="button"
+                  className="rounded-2xl bg-white px-4 py-3 text-center text-[12px] font-medium text-violet-700 ring-1 ring-violet-200/60"
+                  disabled={busy === "insights" || busy === "advisor"}
+                  onClick={async () => {
+                    setBusy("insights");
+                    try {
+                      await api.generateInsights();
+                      await load();
+                    } finally {
+                      setBusy(null);
+                    }
+                  }}
+                >
+                  {busy === "insights" ? "Refreshing…" : "Refresh insights"}
+                </button>
+              )}
+            </div>
+          )}
+
+          {showingImprove && !loading && insights.length === 0 && (
+            <div className="rounded-2xl bg-white px-4 py-8 text-center text-[13px] text-zinc-500 ring-1 ring-black/5">
+              No action cards yet. Use Get advice to pull next steps from open
+              loops, recent activity, and any MCP servers you connected in
+              Settings.
             </div>
           )}
 
           {!showingImprove &&
+            !showingAsk &&
             filtered.map((loop) => {
             const src = sourceMeta(loop);
             const resolved = showingResolved;
@@ -1400,13 +1794,28 @@ export function WidgetPage() {
                 <h3 className="mt-1.5 text-[14px] font-semibold leading-snug tracking-tight text-zinc-900">
                   {loop.title}
                 </h3>
-                {(loop.who || loop.dueHint) && (
-                  <p className="mt-1 text-[12px] leading-relaxed text-zinc-500">
-                    {loop.who ? loop.who : ""}
-                    {loop.who && loop.dueHint ? " · " : ""}
-                    {loop.dueHint ? `due ${loop.dueHint}` : ""}
-                  </p>
-                )}
+                {(() => {
+                  const who = displayWho(loop.who);
+                  const due = formatDue(loop.dueAt);
+                  if (!who && !due) return null;
+                  return (
+                    <p className="mt-1 text-[12px] leading-relaxed text-zinc-500">
+                      {who ?? ""}
+                      {who && due ? " · " : ""}
+                      {due ? (
+                        <span
+                          className={
+                            due.overdue
+                              ? "font-medium text-rose-600"
+                              : undefined
+                          }
+                        >
+                          {due.label}
+                        </span>
+                      ) : null}
+                    </p>
+                  );
+                })()}
                 <div className="mt-2.5 flex flex-wrap gap-1.5">
                   {loop.sourceUrl && (
                     <button
@@ -1480,17 +1889,59 @@ export function WidgetPage() {
             className="flex items-center gap-2"
             onSubmit={(e) => void submitAsk(e)}
           >
+            <button
+              type="button"
+              className={clsx(
+                "relative shrink-0 touch-none select-none rounded-xl px-2.5 py-2 text-[12px] font-medium disabled:opacity-50",
+                recording
+                  ? "bg-rose-600 text-white"
+                  : voiceReady
+                    ? "bg-violet-100 text-violet-800 hover:bg-violet-200"
+                    : "bg-zinc-100 text-zinc-500 hover:bg-zinc-200",
+              )}
+              title={
+                recording
+                  ? "Release to send"
+                  : voiceReady
+                    ? "Press and hold to talk"
+                    : "Add Cartesia API key in Settings → Voice"
+              }
+              disabled={askBusy && !recording}
+              onPointerDown={onMicPointerDown}
+              onPointerUp={onMicPointerUp}
+              onPointerCancel={onMicPointerUp}
+              onContextMenu={(e) => e.preventDefault()}
+            >
+              {recording ? "Listening" : "Mic"}
+              {recording && (
+                <span
+                  className="absolute bottom-0.5 left-1.5 right-1.5 h-0.5 overflow-hidden rounded-full bg-white/30"
+                  aria-hidden
+                >
+                  <span
+                    className="block h-full bg-white transition-[width] duration-75"
+                    style={{
+                      width: `${Math.max(8, Math.round(micLevel * 100))}%`,
+                    }}
+                  />
+                </span>
+              )}
+            </button>
             <input
               className="min-w-0 flex-1 rounded-xl border-0 bg-zinc-100 px-3 py-2 text-[12px] text-zinc-900 outline-none placeholder:text-zinc-400"
-              placeholder="Ask your agent…"
+              placeholder={
+                recording
+                  ? "Listening… release Mic to send"
+                  : "Ask your agent…"
+              }
               value={askQ}
               onChange={(e) => setAskQ(e.target.value)}
-              disabled={askBusy}
+              disabled={askBusy || recording}
             />
             <button
               type="submit"
               className="rounded-xl bg-zinc-950 px-3 py-2 text-[12px] font-medium text-white disabled:opacity-50"
-              disabled={askBusy}
+              disabled={askBusy || recording}
             >
               {askBusy ? "…" : "Ask"}
             </button>

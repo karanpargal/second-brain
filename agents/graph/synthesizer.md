@@ -6,6 +6,25 @@ Merges Worker + three reviews into one verdict per feature. Security blockers be
 
 ## Log
 
+## Run 2026-08-20 — Cartesia voice + personal brain
+
+**What:** Merged Worker + Security + Logic + Style for V01–V06.
+
+**Why:** Ship voice Ask grounded on local memory without turning Cartesia into the brain.
+
+| ID | Verdict | Notes |
+|----|---------|-------|
+| V01 | KEEP | Richer ask context |
+| V02 | KEEP | Sessions + ask memory chunks |
+| V03 | KEEP | Proxied Cartesia; encrypted key |
+| V04 | KEEP | Widget/Ask mic + TTS |
+| V05 | KEEP | Settings Voice |
+| V06 | KEEP | WebView2 mic allow |
+
+**Conflicts:** none. Security note (speech to Cartesia) is documented, not a blocker.
+
+---
+
 ## Run 2026-08-18 — Improve coach re-audit
 
 **What:** Merged Worker pass 1 + Security ([Security](43f2eff2-f774-4b8d-aced-2a235e33b516)) + Logic ([Logic](feefac75-71c7-4186-8218-12bd484a174b)) + Style ([Style](1bfa42d0-418d-4466-9ceb-28bcefe4e825)).

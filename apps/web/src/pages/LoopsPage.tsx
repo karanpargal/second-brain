@@ -103,7 +103,25 @@ export function LoopsPage() {
                       {l.kind} · {l.origin} ·{" "}
                       {Math.round(l.confidence * 100)}%
                       {l.who ? ` · ${l.who}` : ""}
-                      {l.dueHint ? ` · due ${l.dueHint}` : ""}
+                      {l.dueAt
+                        ? (() => {
+                            const ms = Date.parse(l.dueAt);
+                            if (Number.isNaN(ms)) return "";
+                            const due = new Date(ms);
+                            const today = new Date();
+                            today.setHours(0, 0, 0, 0);
+                            const dueDay = new Date(due);
+                            dueDay.setHours(0, 0, 0, 0);
+                            const days = Math.round(
+                              (dueDay.getTime() - today.getTime()) / 86_400_000,
+                            );
+                            if (days < 0)
+                              return ` · Overdue by ${Math.abs(days)} day${Math.abs(days) === 1 ? "" : "s"}`;
+                            if (days === 0) return " · Due today";
+                            if (days === 1) return " · Due tomorrow";
+                            return ` · Due ${due.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+                          })()
+                        : ""}
                     </div>
                   </div>
                   <span className="badge bg-white/10 text-ink-400">

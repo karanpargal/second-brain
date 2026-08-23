@@ -22,7 +22,7 @@ import {
 } from "./insight-quality.js";
 
 const TELEMETRY_KINDS = new Set(["focus", "deep_work", "artifacts", "skills"]);
-const IMPROVE_KINDS = new Set(["learn", "progress"]);
+const IMPROVE_KINDS = new Set(["learn", "progress", "action"]);
 
 export type InsightSuggestion = {
   title: string;
@@ -30,11 +30,22 @@ export type InsightSuggestion = {
   kind: "article" | "video";
 };
 
+export type InsightSourceRef = {
+  server: string;
+  tool: string;
+  ref: string;
+  url?: string;
+};
+
 type InsightMeta = {
   dismissed?: boolean;
   topic?: string;
   suggestions?: InsightSuggestion[];
   ollamaOffline?: boolean;
+  nextStep?: string;
+  effortMin?: number;
+  sources?: InsightSourceRef[];
+  confidence?: number;
 };
 
 function weekKey(d = new Date()): string {
@@ -250,6 +261,10 @@ export function listInsights(limit = 20) {
         topic: meta.topic,
         suggestions,
         ollamaOffline: Boolean(meta.ollamaOffline),
+        nextStep: meta.nextStep ? redactPii(meta.nextStep) : undefined,
+        effortMin: meta.effortMin,
+        sources: meta.sources ?? [],
+        confidence: meta.confidence,
       };
     })
     .filter((i) => isCoachCardText(i.title) && isCoachCardText(i.body))

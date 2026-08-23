@@ -387,6 +387,21 @@ CREATE TABLE IF NOT EXISTS user_profiles (
   onboarding_done INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS ask_sessions (
+  id TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ask_turns (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES ask_sessions(id),
+  role TEXT NOT NULL,
+  text TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS ask_turns_session ON ask_turns(session_id, created_at);
 `;
 
 function ensureColumn(

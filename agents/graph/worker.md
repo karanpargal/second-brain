@@ -8,6 +8,18 @@ On a **Gate fail**, revise `features.md` using synthesizer notes, then append a 
 
 ## Log
 
+## Run 2026-08-20 — Cartesia voice + personal brain
+
+**What:** Inventoried V01–V06 after implementing Cartesia voice + brain context. Replaced `features.md` for this run.
+
+**Why:** Planner scoped voice Ask grounded on local activity memory.
+
+**Evidence:** `ask.ts`, `cartesia.ts`, `api.ts` (apiVersion 11), `WidgetPage.tsx`, `AskPage.tsx`, `SettingsPage.tsx`, `main.rs` mic handler, `ask-voice.test.ts`.
+
+**Verdicts:** deferred to Synthesizer — all needed features Built=yes.
+
+---
+
 ## Run 2026-08-18 — Improve coach re-audit
 
 **What:** Re-inventoried U01–U15 against the current tree. Replaced `features.md`. Did not verdict KEEP/FIX/CUT.

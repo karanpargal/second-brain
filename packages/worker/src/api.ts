@@ -262,12 +262,22 @@ async function handle(
     const ollama = await ollamaStatus();
     const lastEval = lastEvalLearn();
     const src = db.select().from(sources).all();
-    const gmailErr = src.find((s) => s.id === "src-gmail")?.lastError ?? null;
-    const githubErr = src.find((s) => s.id === "src-github")?.lastError ?? null;
+    const gmailSrc = src.find((s) => s.id === "src-gmail");
+    const githubSrc = src.find((s) => s.id === "src-github");
+    const gcalSrc = src.find((s) => s.id === "src-gcal");
+    const gmailErr = gmailSrc?.lastError ?? null;
+    const githubErr = githubSrc?.lastError ?? null;
+    const { listMcpServerConfigs } = await import("@second-brain/connectors");
+    const mcpServers = listMcpServerConfigs().map((s) => ({
+      id: s.id,
+      label: s.label,
+      enabled: s.enabled,
+      transport: s.transport,
+    }));
     reply(200, {
       ok: true,
       dataDir: config.dataDir,
-      apiVersion: 10,
+      apiVersion: 14,
       features: [
         "spam",
         "wake",
@@ -279,6 +289,8 @@ async function handle(
         "ocr-classify",
         "learn-graph",
         "self-eval",
+        "cartesia-voice",
+        "mcp-advisor",
       ],
       eval: lastEval
         ? {
@@ -294,11 +306,24 @@ async function handle(
           gmailErr && /invalid_grant|unauthorized|invalid_token/i.test(gmailErr),
         ),
         lastError: gmailErr,
+        lastRunAt: gmailSrc?.lastRunAt ?? null,
+        gcalLastRunAt: gcalSrc?.lastRunAt ?? null,
+        gcalLastError: gcalSrc?.lastError ?? null,
       },
       github: {
         ...gh,
         lastError: githubErr,
+        lastRunAt: githubSrc?.lastRunAt ?? null,
       },
+      mcp: mcpServers,
+      sources: src.map((s) => ({
+        id: s.id,
+        kind: s.kind,
+        name: s.name,
+        enabled: s.enabled,
+        lastRunAt: s.lastRunAt,
+        lastError: s.lastError,
+      })),
       ollama,
       spool: spoolStats(),
       port: config.port,
@@ -327,6 +352,18 @@ async function handle(
         });
       try {
         await authLock;
+        {
+          const { eq } = await import("drizzle-orm");
+          for (const id of ["src-gmail", "src-gcal"] as const) {
+            db.update(sources)
+              .set({
+                lastError: null,
+                updatedAt: new Date().toISOString(),
+              })
+              .where(eq(sources.id, id))
+              .run();
+          }
+        }
         reply(200, {
           ok: true,
           message: "Google connected. Click Sync to pull Gmail.",
@@ -616,13 +653,115 @@ async function handle(
     }
 
     if (method === "POST" && path === "/api/ask") {
-      const body = await readJson<{ question: string }>(req);
+      const body = await readJson<{ question: string; sessionId?: string }>(req);
       if (!body.question) {
         reply(400, { error: "question required" });
         return;
       }
-      const r = await askMemory(body.question);
+      const r = await askMemory(body.question, body.sessionId);
       reply(200, r);
+      return;
+    }
+
+    if (method === "GET" && path === "/api/ask/voice-status") {
+      const { isCartesiaConfigured } = await import("@second-brain/agents");
+      reply(200, { configured: isCartesiaConfigured() });
+      return;
+    }
+
+    if (method === "POST" && path === "/api/ask/voice") {
+      const body = await readJson<{
+        audioBase64: string;
+        mimeType?: string;
+        sessionId?: string;
+      }>(req);
+      const { isCartesiaConfigured, cartesiaTranscribe, cartesiaSpeak, isWeakVoiceTranscript } =
+        await import("@second-brain/agents");
+      if (!isCartesiaConfigured()) {
+        reply(503, {
+          error:
+            "Cartesia is not configured. Add your API key in Settings → Voice.",
+        });
+        return;
+      }
+      if (!body.audioBase64) {
+        reply(400, { error: "audioBase64 required" });
+        return;
+      }
+      try {
+        const audio = Buffer.from(body.audioBase64, "base64");
+        if (audio.length < 64) {
+          reply(400, { error: "audio too short" });
+          return;
+        }
+        if (audio.length > 8_000_000) {
+          reply(400, { error: "audio too large" });
+          return;
+        }
+        const mimeType = body.mimeType || "audio/webm";
+        const { text: transcript } = await cartesiaTranscribe(audio, mimeType);
+        if (isWeakVoiceTranscript(transcript)) {
+          reply(422, {
+            error: "weak_transcript",
+            transcript,
+            hint: "Didn't catch a real question — hold Mic and speak clearly, then stop.",
+          });
+          return;
+        }
+        const r = await askMemory(transcript, body.sessionId);
+        let answer = (r.answer ?? "").trim();
+        if (!answer || answer === "(empty response)") {
+          answer = "I didn't get a usable answer from the local model. Try asking again.";
+        }
+        const spoken = await cartesiaSpeak(answer);
+        reply(200, {
+          transcript,
+          answer,
+          sources: r.sources,
+          sessionId: r.sessionId,
+          audioBase64: spoken.audio.toString("base64"),
+          audioMime: spoken.mimeType,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        reply(502, { error: msg });
+      }
+      return;
+    }
+
+    if (method === "POST" && path === "/api/settings/cartesia") {
+      const body = await readJson<{ apiKey: string }>(req);
+      if (!body.apiKey?.trim()) {
+        reply(400, { error: "apiKey required" });
+        return;
+      }
+      try {
+        const { saveCartesiaApiKey } = await import("@second-brain/agents");
+        saveCartesiaApiKey(body.apiKey);
+        reply(200, { ok: true, configured: true });
+      } catch (e) {
+        reply(400, {
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+      return;
+    }
+
+    if (method === "GET" && path === "/api/settings/hosted-llm") {
+      const { hostedLlmStatus } = await import("@second-brain/agents");
+      reply(200, hostedLlmStatus());
+      return;
+    }
+
+    if (method === "POST" && path === "/api/settings/hosted-llm") {
+      const body = await readJson<{
+        url?: string;
+        model?: string;
+        apiKey?: string;
+        useForAsk?: boolean;
+      }>(req);
+      const { saveHostedLlm } = await import("@second-brain/agents");
+      reply(200, saveHostedLlm(body));
       return;
     }
 
@@ -859,6 +998,127 @@ async function handle(
       const id = path.slice("/api/insights/".length);
       const { dismissInsight } = await import("@second-brain/agents");
       reply(200, dismissInsight(id));
+      return;
+    }
+
+    if (method === "POST" && path === "/api/advisor/run") {
+      const { runAdvisor } = await import("@second-brain/agents");
+      const result = await runAdvisor({ persist: true, includeBrief: true });
+      reply(200, result);
+      return;
+    }
+
+    if (method === "GET" && path === "/api/mcp/servers") {
+      const { listMcpServerConfigs } = await import("@second-brain/connectors");
+      reply(200, { servers: listMcpServerConfigs() });
+      return;
+    }
+
+    if (method === "POST" && path === "/api/mcp/servers") {
+      const body = await readJson<{
+        id: string;
+        label?: string;
+        transport?: "stdio" | "http";
+        command?: string;
+        args?: string[];
+        url?: string;
+        env?: Record<string, string>;
+        secretKeys?: string[];
+        enabled?: boolean;
+        secrets?: Record<string, string>;
+      }>(req);
+      if (!body.id?.trim()) {
+        reply(400, { error: "id required" });
+        return;
+      }
+      const { upsertMcpServerConfig } = await import("@second-brain/connectors");
+      const { setSecret } = await import("@second-brain/core");
+      const id = body.id.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+      const cfg = {
+        id,
+        label: body.label?.trim() || id,
+        transport: (body.transport === "http" ? "http" : "stdio") as
+          | "stdio"
+          | "http",
+        command: body.command,
+        args: body.args,
+        url: body.url,
+        env: body.env,
+        secretKeys:
+          body.secretKeys ??
+          (body.secrets ? Object.keys(body.secrets) : []),
+        enabled: body.enabled !== false,
+      };
+      if (body.secrets) {
+        for (const [k, v] of Object.entries(body.secrets)) {
+          if (v) setSecret(`mcp.${id}.${k}`, v);
+        }
+      }
+      upsertMcpServerConfig(cfg);
+      reply(200, { ok: true, server: cfg });
+      return;
+    }
+
+    if (
+      method === "POST" &&
+      path.startsWith("/api/mcp/servers/") &&
+      path.endsWith("/test")
+    ) {
+      const id = path.slice("/api/mcp/servers/".length, -"/test".length);
+      const { getMcpServerConfig, listMcpTools } = await import(
+        "@second-brain/connectors"
+      );
+      const { isReadOnlyTool } = await import("@second-brain/agents");
+      const cfg = getMcpServerConfig(id);
+      if (!cfg) {
+        reply(404, { error: "server not found" });
+        return;
+      }
+      try {
+        const tools = await listMcpTools(cfg);
+        reply(200, {
+          ok: true,
+          tools: tools.map((t) => ({
+            name: t.name,
+            description: t.description,
+            readOnly: isReadOnlyTool(t),
+          })),
+          readOnly: tools.filter((t) => isReadOnlyTool(t)).map((t) => t.name),
+        });
+      } catch (e) {
+        reply(400, {
+          ok: false,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+      return;
+    }
+
+    if (
+      method === "DELETE" &&
+      path.startsWith("/api/mcp/servers/") &&
+      !path.slice("/api/mcp/servers/".length).includes("/")
+    ) {
+      const id = path.slice("/api/mcp/servers/".length);
+      const { removeMcpServerConfig } = await import("@second-brain/connectors");
+      reply(200, { servers: removeMcpServerConfig(id) });
+      return;
+    }
+
+    if (
+      method === "POST" &&
+      path.startsWith("/api/mcp/servers/") &&
+      path.endsWith("/secret")
+    ) {
+      const id = path.slice("/api/mcp/servers/".length, -"/secret".length);
+      const body = await readJson<{ key: string; value: string }>(req);
+      if (!body.key || !body.value) {
+        reply(400, { error: "key and value required" });
+        return;
+      }
+      const { setSecret } = await import("@second-brain/core");
+      setSecret(`mcp.${id}.${body.key}`, body.value);
+      reply(200, { ok: true });
       return;
     }
 

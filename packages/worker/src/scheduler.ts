@@ -27,10 +27,12 @@ import {
   ensureCalendarLeadReminders,
   generateWeeklyInsights,
   listInsights,
+  runAdvisor,
 } from "@second-brain/agents";
 import { runFullEval } from "@second-brain/evals";
 import { startApiServer } from "./api.js";
 import { scheduleFastLoopDetect } from "./fast-loops.js";
+import { ensureWebBuild } from "./web-build.js";
 
 export async function jobIngest(source?: string): Promise<JobResult> {
   return runJob(source ? `ingest:${source}` : "ingest:all", async () => {
@@ -126,6 +128,20 @@ export async function jobInsights(): Promise<JobResult> {
   });
 }
 
+export async function jobAdvisor(): Promise<JobResult> {
+  return runJob("advisor", async () => {
+    const r = await runAdvisor({ persist: true, includeBrief: true });
+    return {
+      stats: {
+        cards: r.cards.length,
+        toolCalls: r.toolCalls,
+        mcpServers: r.mcpServers,
+        mcpTools: r.mcpTools,
+      },
+    };
+  });
+}
+
 export async function jobEval(): Promise<JobResult> {
   return runJob("evals", async () => {
     const r = await runFullEval({ persist: true });
@@ -172,10 +188,11 @@ export async function catchUpOnBoot() {
   log.info("Catch-up on boot complete");
 }
 
-export function startScheduler() {
+export async function startScheduler() {
   ensureDataDir();
   migrate();
   seed();
+  await ensureWebBuild();
   startApiServer();
 
   const s = config.schedule;
@@ -203,6 +220,7 @@ export function startScheduler() {
   safe("backup", () => jobBackup());
   safe("reminders", () => jobReminders());
   safe("insights", () => jobInsights());
+  safe("advisor", () => jobAdvisor());
   safe("evals", () => jobEval());
 
   setTimeout(() => {
@@ -230,7 +248,7 @@ export async function runCli(argv: string[]) {
   switch (cmd) {
     case "daemon":
     case "start":
-      startScheduler();
+      await startScheduler();
       break;
     case "ingest":
       await jobIngest(rest[0]);

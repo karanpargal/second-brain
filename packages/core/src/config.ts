@@ -34,6 +34,19 @@ function loadDotEnv(): void {
 
 loadDotEnv();
 
+/**
+ * Ollama keep_alive must be a Go duration ("5m", "24h") or JSON number -1.
+ * String "-1" fails on Ollama 0.32+: `time: missing unit in duration "-1"`.
+ */
+export function normalizeOllamaKeepAlive(
+  raw: string | undefined,
+): string | number {
+  const v = (raw ?? "-1").trim();
+  if (!v || v === "-1" || v.toLowerCase() === "forever") return -1;
+  if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+  return v;
+}
+
 function defaultDataDir(): string {
   if (process.env.BRAIN_DATA_DIR) return process.env.BRAIN_DATA_DIR;
   // Windows: %LOCALAPPDATA%\second-brain — never inside OneDrive
@@ -97,14 +110,21 @@ export const config = {
   ollama: {
     baseUrl: process.env.OLLAMA_BASE_URL ?? "http://127.0.0.1:11434",
     models: {
-      fast: process.env.OLLAMA_MODEL_FAST ?? "qwen2.5:14b",
-      smart: process.env.OLLAMA_MODEL_SMART ?? "qwen2.5:14b",
+      /** Prefer gpt-oss:20b when pulled; fall back to qwen2.5:14b */
+      fast: process.env.OLLAMA_MODEL_FAST ?? "gpt-oss:20b",
+      smart: process.env.OLLAMA_MODEL_SMART ?? "gpt-oss:20b",
+      fallback: process.env.OLLAMA_MODEL_FALLBACK ?? "qwen2.5:14b",
     },
     /** Embeddings model (GPU when possible) */
     embedModel: process.env.OLLAMA_EMBED_MODEL ?? "nomic-embed-text",
-    /** Keep model loaded; e.g. "30m" or "-1" forever */
-    keepAlive: process.env.OLLAMA_KEEP_ALIVE ?? "30m",
-    maxTokens: Number(process.env.OLLAMA_MAX_TOKENS ?? 4096),
+    /**
+     * Keep model loaded. Prefer a Go duration ("24h", "30m") or numeric -1.
+     * Bare string "-1" is rejected by Ollama ≥0.32 (`time: missing unit in duration`).
+     */
+    keepAlive: normalizeOllamaKeepAlive(process.env.OLLAMA_KEEP_ALIVE),
+    maxTokens: Number(process.env.OLLAMA_MAX_TOKENS ?? 8192),
+    /** Per-call timeout for Ollama chat (ms) */
+    timeoutMs: Number(process.env.OLLAMA_TIMEOUT_MS ?? 180_000),
   },
   embed: {
     /** Fallback local model when Ollama embeddings unavailable */
@@ -133,6 +153,7 @@ export const config = {
     backup: "0 3 * * *",
     reminders: "*/1 * * * *",
     insights: "0 8 * * 1",
+    advisor: "30 8 * * *",
     evals: "20 4 * * *",
   },
   hostedLlm: {

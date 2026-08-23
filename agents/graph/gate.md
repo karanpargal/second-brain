@@ -8,6 +8,16 @@ On fail: send notes back to Worker (max 2 Worker passes), then fail closed.
 
 ## Log
 
+## Run 2026-08-20 — Cartesia voice + personal brain
+
+**Decision: PASS**
+
+**What:** V01–V06 all KEEP. No security shipping blocker. User pastes Cartesia key in Settings after reopen of the desktop app.
+
+**Why:** Matches planner pass criteria; one-click law intact.
+
+---
+
 ## Run 2026-08-18 — Improve coach re-audit
 
 **Decision: PASS** (analysis — coach UI is real; graph-engineering identity is not).

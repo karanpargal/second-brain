@@ -15,6 +15,21 @@ export {
   installGithubCli,
 } from "./github-auth.js";
 export type { ConnectorResult, NormalizedItem } from "./base.js";
+export {
+  withMcpClient,
+  listMcpTools,
+  callMcpTool,
+  type McpToolInfo,
+} from "./mcp/client.js";
+export {
+  listMcpServerConfigs,
+  listEnabledMcpServers,
+  getMcpServerConfig,
+  saveMcpServerConfigs,
+  upsertMcpServerConfig,
+  removeMcpServerConfig,
+  type McpServerConfig,
+} from "./mcp/registry.js";
 
 import { syncGmail } from "./gmail.js";
 import { syncGcal } from "./gcal.js";

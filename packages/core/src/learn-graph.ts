@@ -23,7 +23,7 @@ export type LearnClassifyInput = {
 };
 
 const MARKET_RE =
-  /\b(unrealized pn|opened (long|short)|cross margin|tp\/sl|take profit|stop loss|liquidation|oracle price|notional|isolated margin|limit order at|fill(s)?\b.{0,12}(long|short)|xyz:(gold|spcx|btc|unitree))\b/i;
+  /\b(unrealized pn|opened (long|short)|cross margin|tp\/sl|take profit|stop loss|liquidation|oracle price|notional|isolated margin|limit order at|fill(s)?\b.{0,12}(long|short)|xyz:(gold|spcx|btc|unitree)|bull run|bear run)\b/i;
 
 export function looksLikeMarket(text: string): boolean {
   const t = text.replace(/\s+/g, " ");

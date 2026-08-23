@@ -527,3 +527,26 @@ export const userProfiles = sqliteTable("user_profiles", {
     .default(false),
   updatedAt: ts("updated_at"),
 });
+
+/** Multi-turn Ask-your-agent sessions (text or voice) */
+export const askSessions = sqliteTable("ask_sessions", {
+  id: text("id").primaryKey(),
+  createdAt: ts("created_at"),
+  updatedAt: ts("updated_at"),
+});
+
+export const askTurns = sqliteTable(
+  "ask_turns",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => askSessions.id),
+    role: text("role").notNull(), // user | assistant
+    text: text("text").notNull(),
+    createdAt: ts("created_at"),
+  },
+  (t) => ({
+    sessionIdx: index("ask_turns_session").on(t.sessionId, t.createdAt),
+  }),
+);

@@ -2,7 +2,7 @@
  * Single entry: start core, then floating desktop widget (not browser).
  */
 import { spawn } from "node:child_process";
-import { existsSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, writeFileSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -154,6 +154,51 @@ function openUrl(url) {
   }
 }
 
+function webUiStale() {
+  const distIndex = join(ROOT, "apps", "web", "dist", "index.html");
+  const srcDir = join(ROOT, "apps", "web", "src");
+  if (!existsSync(distIndex)) return true;
+  if (!existsSync(srcDir)) return false;
+  const newest = (dir) => {
+    let m = 0;
+    const walk = (d) => {
+      let entries;
+      try {
+        entries = readdirSync(d);
+      } catch {
+        return;
+      }
+      for (const name of entries) {
+        if (name === "node_modules" || name === "dist") continue;
+        const p = join(d, name);
+        try {
+          const st = statSync(p);
+          if (st.isDirectory()) walk(p);
+          else if (st.mtimeMs > m) m = st.mtimeMs;
+        } catch {
+          /* */
+        }
+      }
+    };
+    walk(dir);
+    return m;
+  };
+  return newest(srcDir) > newest(join(ROOT, "apps", "web", "dist")) + 500;
+}
+
+async function ensureWebUi() {
+  if (!webUiStale()) return;
+  console.warn("[second-brain] building UI (source newer than dist)…");
+  const build = spawn(
+    process.platform === "win32" ? "npm.cmd" : "npm",
+    ["run", "build", "-w", "@second-brain/web"],
+    { cwd: ROOT, stdio: "inherit", shell: true },
+  );
+  await new Promise((resolve) => {
+    build.on("exit", () => resolve());
+  });
+}
+
 async function main() {
   process.chdir(ROOT);
 
@@ -161,7 +206,7 @@ async function main() {
   if (!h?.ok) {
     console.log(`[second-brain] starting core on ${BASE}…`);
     startCore();
-    h = await waitForHealthy();
+    h = await waitForHealthy(120_000);
     if (!h?.ok) {
       console.error("[second-brain] core failed to start");
       process.exit(1);
@@ -170,17 +215,8 @@ async function main() {
     console.log(`[second-brain] core already running`);
   }
 
-  if (!h.ui) {
-    console.warn("[second-brain] building UI once…");
-    const build = spawn(
-      process.platform === "win32" ? "npm.cmd" : "npm",
-      ["run", "build", "-w", "@second-brain/web"],
-      { cwd: ROOT, stdio: "inherit", shell: true },
-    );
-    await new Promise((resolve) => {
-      build.on("exit", () => resolve());
-    });
-  }
+  // Daemon also rebuilds on boot; this covers already-running cores + missing dist.
+  await ensureWebUi();
 
   const desktop = startDesktopWidget();
   if (desktop) {

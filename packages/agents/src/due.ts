@@ -98,6 +98,7 @@ export function parseDueHint(
 ): string | null {
   const t = hint.trim();
   if (!t) return null;
+  if (/^(soon|asap|later|sometime|tbd|n\/?a)$/i.test(t)) return null;
   const dmy = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})$/);
   if (dmy) {
     const day = Number(dmy[1]);
@@ -109,4 +110,65 @@ export function parseDueHint(
     }
   }
   return parseDueAt(t, now);
+}
+
+export type FormattedDue = {
+  label: string;
+  overdue: boolean;
+  daysUntil: number;
+};
+
+function startOfLocalDay(d: Date): Date {
+  const out = new Date(d);
+  out.setHours(0, 0, 0, 0);
+  return out;
+}
+
+/**
+ * Human-friendly due label from dueAt (ISO). Prefer this over raw dueHint in UI.
+ */
+export function formatDue(
+  dueAt: string | null | undefined,
+  now: Date = new Date(),
+): FormattedDue | null {
+  if (!dueAt) return null;
+  const ms = Date.parse(dueAt);
+  if (Number.isNaN(ms)) return null;
+  const dueDay = startOfLocalDay(new Date(ms));
+  const today = startOfLocalDay(now);
+  const daysUntil = Math.round(
+    (dueDay.getTime() - today.getTime()) / 86_400_000,
+  );
+
+  if (daysUntil < 0) {
+    const n = Math.abs(daysUntil);
+    return {
+      label: n === 1 ? "Overdue by 1 day" : `Overdue by ${n} days`,
+      overdue: true,
+      daysUntil,
+    };
+  }
+  if (daysUntil === 0) {
+    return { label: "Due today", overdue: false, daysUntil };
+  }
+  if (daysUntil === 1) {
+    return { label: "Due tomorrow", overdue: false, daysUntil };
+  }
+  if (daysUntil < 7) {
+    const weekday = dueDay.toLocaleDateString(undefined, { weekday: "short" });
+    const day = dueDay.getDate();
+    const month = dueDay.toLocaleDateString(undefined, { month: "short" });
+    return {
+      label: `Due ${weekday} ${day} ${month}`,
+      overdue: false,
+      daysUntil,
+    };
+  }
+  const day = dueDay.getDate();
+  const month = dueDay.toLocaleDateString(undefined, { month: "short" });
+  return {
+    label: `Due ${day} ${month}`,
+    overdue: false,
+    daysUntil,
+  };
 }

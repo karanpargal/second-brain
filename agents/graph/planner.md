@@ -8,7 +8,37 @@ Does **not** inventory code (that is Worker) and does **not** verdict features (
 
 ## Log
 
+## Run 2026-08-20 — Cartesia voice + personal brain
+
+**What:** Scoped Ask-your-agent voice loop (Cartesia STT/TTS) grounded on richer local brain context (timeline, resume, profile, multi-turn). Cartesia is I/O only; Ollama stays the brain.
+
+**Why:** User wants talk-back-and-forth on what they have been doing, from the desktop widget.
+
+**Intended behavior:**
+
+1. Push-to-talk mic on widget / Ask page → core proxies Cartesia STT → `askMemory` with brain context → Cartesia TTS → play audio.
+2. Text Ask still works without a Cartesia key.
+3. Key in encrypted secrets; never in the webview.
+4. Answers use today timeline, where-left-off, open loops, profile, session turns, RAG memory.
+5. One-click: reopen desktop app; no npm for daily use.
+
+**Pass criteria:** V01–V06 KEEP or FIX-with-next-action; no API key in SPA; mic allowed in WebView2.
+
+**Features:**
+
+| ID | Feature |
+|----|---------|
+| V01 | Richer `askMemory` brain context |
+| V02 | Ask sessions / turns + memory_chunks kind ask |
+| V03 | Cartesia STT/TTS proxy + encrypted key |
+| V04 | Widget / Ask mic + thread + TTS playback |
+| V05 | Settings Voice key surface |
+| V06 | Desktop WebView2 microphone allow |
+
+---
+
 ## Run 2026-08-18 — Chat apps, zero friction (scope)
+
 
 **What:** Scoped adding WhatsApp / Telegram / Slack / Discord / Signal / Teams **without any connect UX**. Not a full Worker inventory this pass — Improve U11/U12/U13/U10 shipped in the same session.
 
