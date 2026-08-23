@@ -106,7 +106,7 @@ I will send the paymen to you tornorrow`,
     expect(
       scoreChatAction({
         app: "Slack",
-        windowTitle: "pritesh (DM) - Covalent - Slack",
+        windowTitle: "jamie (DM) - Acme - Slack",
         text: "Opened LONG xyz:GOLD Market $99.81 notional PnL -0.15 cross margin TP/SL",
       }),
     ).toBeNull();

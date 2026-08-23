@@ -61,7 +61,7 @@ describe("insight quality", () => {
     expect(
       isWorkArtifact({
         kind: "url",
-        key: "https://github.com/karan/second-brain",
+        key: "https://github.com/example/second-brain",
         title: "second-brain pull request",
       }),
     ).toBe(true);
@@ -118,11 +118,11 @@ describe("insight quality", () => {
         github: [
           {
             title: "fix widget",
-            url: "https://github.com/karan/second-brain/pull/1",
+            url: "https://github.com/example/second-brain/pull/1",
           },
         ],
       }),
-    ).toBe("karan/second-brain");
+    ).toBe("example/second-brain");
   });
 
   it("extracts learning topics from search titles, not Friends or Gmail", () => {

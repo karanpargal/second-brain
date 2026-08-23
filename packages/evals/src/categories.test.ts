@@ -10,8 +10,8 @@ describe("mail categories", () => {
   it("turns a sent job application into a follow-up, never reply", () => {
     const r = classifyMailLoop({
       subject: "Interested in engineering at Rivet",
-      body: "Hi, I'm Karan — I'd love to work on Rust and actors at Rivet. Resume attached.",
-      from: "Karan Pargal <you@example.com>",
+      body: "Hi, I'm Alex — I'd love to work on Rust and actors at Rivet. Resume attached.",
+      from: "Alex Rivera <you@example.com>",
       to: "hiring@rivet.dev",
       labels: ["SENT"],
       userEmail: "you@example.com",
@@ -28,25 +28,25 @@ describe("mail categories", () => {
   });
 
   it("drops a sent close-out even when the quoted thread is about hiring", () => {
-    const body = `Thanks, Parth!
+    const body = `Thanks, Sam!
 
 I really appreciate you taking the time to look through my background. I'd be happy to reconnect if something comes up that could be a good fit.
 
 Wishing you and the team all the best!
 
 Best,
-Karan
+Alex
 
-On Mon, Aug 10, 2026 at 11:56 PM Y Combinator <notifications@ycombinator.com> wrote:
+On Mon, Aug 10, 2026 at 11:56 PM Recruiting <notifications@example.com> wrote:
 -- Reply above this line --
-Parth Badhwar from Locke sent you the following message:
-Hi Karan, Thanks for reaching out. Companies hiring on Work at a Startup...`;
+Sam Lee from Northwind sent you the following message:
+Hi Alex, Thanks for reaching out. Companies hiring on our jobs board...`;
     expect(isSentCloseOut(body)).toBe(true);
     const r = classifyMailLoop({
-      subject: "Parth from Locke sent you a message",
+      subject: "Sam from Northwind sent you a message",
       body,
-      from: "Karan Pargal <you@example.com>",
-      to: "bf-j-10059294@inbound.nnd.yccombinator.com",
+      from: "Alex Rivera <you@example.com>",
+      to: "inbound@example.com",
       labels: ["SENT"],
       userEmail: "you@example.com",
       kind: "email",
@@ -85,14 +85,14 @@ Hi Karan, Thanks for reaching out. Companies hiring on Work at a Startup...`;
 
   it("does not treat an IPO allotment regret as billing", () => {
     const r = classifyMailLoop({
-      subject: "DHOOT TRANSMISSION LIMITED-IPO",
+      subject: "ACME INDUSTRIES LIMITED-IPO",
       body: `Dear Investor, Greetings!!
-This is with reference to the application made by you in the public issue of DHOOT TRANSMISSION LIMITED-IPO.
+This is with reference to the application made by you in the public issue of ACME INDUSTRIES LIMITED-IPO.
 Shares Allotted: 0
 Status: Regret - Un-successful allotment due to over-subscription
-Amount Unblocked: 14807.00
+Amount Unblocked: 10000.00
 Date of Unblock: 14/08/2026`,
-      from: "KFIN TECHNOLOGIES LIMITED <dhoot.ipo@kfintech.com>",
+      from: "IPO Registrar <noreply@kfintech.com>",
       labels: ["INBOX"],
       userEmail: "you@example.com",
       kind: "email",

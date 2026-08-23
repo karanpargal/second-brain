@@ -22,3 +22,12 @@ models/
 tmp/
 .vscode/
 !.vscode/extensions.json
+
+# Local install secrets and runtime (never commit)
+secrets.enc.json
+master.key
+api-token
+*.enc.json
+spool/
+core.pid
+scripts/_patch-*.mjs

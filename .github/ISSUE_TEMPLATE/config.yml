@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/karanpargal/second-brain/security/advisories/new
+    about: Report auth bypass, token leakage, or data exfil privately — do not file a public issue.
+  - name: Getting started
+    url: https://github.com/karanpargal/second-brain/blob/main/GETTING_STARTED.md
+    about: Install, Ollama, and first-run help.

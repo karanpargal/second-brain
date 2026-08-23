@@ -196,7 +196,7 @@ export function loopsAreDuplicate(a: DedupeInput, b: DedupeInput): boolean {
   const sameSender =
     Boolean(senderKey(a.who)) && senderKey(a.who) === senderKey(b.who);
 
-  // Same person/mailbox + shared topic words (Kling billing, KOSH card).
+  // Same person/mailbox + shared topic words (billing vendor, card product).
   if (sameSender && overlap >= 2) return true;
 
   // Strong topic overlap even when "who" is a display name / missing.

@@ -14,13 +14,13 @@ describe("loop dedupe", () => {
     expect(
       loopsAreDuplicate(
         {
-          title: "Answer the two questions about services and offerings for a premium KOSH card.",
-          who: "Karan",
+          title: "Answer the two questions about services and offerings for a premium Nimbus card.",
+          who: "Alex",
           sourceUrl: thread,
         },
         {
-          title: "Follow up: A question about the KOSH premium card",
-          who: "Karan",
+          title: "Follow up: A question about the Nimbus premium card",
+          who: "Alex",
           sourceUrl: thread,
         },
       ),
@@ -29,7 +29,7 @@ describe("loop dedupe", () => {
 
   it("merges LLM-rewritten titles from the same Stripe billing sender", () => {
     const who =
-      "Kling AI <failed-payments+acct_1TE4m49FGqv0wmIF@stripe.com>";
+      "Kling AI <failed-payments+acct_example@stripe.com>";
     expect(senderKey(who)).toBe("failed-payments@stripe.com");
     expect(
       loopsAreDuplicate(

@@ -2,7 +2,16 @@
   "name": "second-brain",
   "version": "0.2.0",
   "private": true,
-  "description": "Local-first ambient memory with open loops (Minimi for Windows)",
+  "license": "MIT",
+  "description": "Local-first ambient memory and open loops for Windows",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/karanpargal/second-brain.git"
+  },
+  "bugs": {
+    "url": "https://github.com/karanpargal/second-brain/issues"
+  },
+  "homepage": "https://github.com/karanpargal/second-brain#readme",
   "workspaces": [
     "apps/*",
     "packages/*"
