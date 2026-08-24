@@ -35,7 +35,7 @@
     },
     "trayIcon": {
       "iconPath": "icons/icon.png",
-      "iconAsTemplate": false
+      "iconAsTemplate": true
     }
   },
   "bundle": {
@@ -44,7 +44,11 @@
     "icon": [
       "icons/icon.png",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "infoPlist": "Info.plist"
+    }
   },
   "plugins": {}
 }

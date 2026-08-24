@@ -10,12 +10,40 @@ use std::time::{Duration, Instant};
 
 static CORE_CHILD: Mutex<Option<Child>> = Mutex::new(None);
 
-fn data_dir() -> PathBuf {
+/// Shared data directory — must match `packages/core` `defaultDataDir()`.
+pub fn data_dir() -> PathBuf {
     if let Ok(p) = std::env::var("BRAIN_DATA_DIR") {
         return PathBuf::from(p);
     }
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        return PathBuf::from(local).join("second-brain");
+    #[cfg(windows)]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            return PathBuf::from(local).join("second-brain");
+        }
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            return PathBuf::from(home)
+                .join("AppData")
+                .join("Local")
+                .join("second-brain");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("second-brain");
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("second-brain");
+        }
     }
     PathBuf::from("second-brain")
 }
@@ -123,7 +151,7 @@ fn repo_root() -> Option<PathBuf> {
         }
     }
 
-    // Prefer walk from the desktop .exe location (works when double-clicked)
+    // Prefer walk from the desktop binary location (works when double-clicked)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(mut cur) = exe.parent().map(|p| p.to_path_buf()) {
             for _ in 0..12 {
@@ -157,7 +185,6 @@ fn repo_root() -> Option<PathBuf> {
 }
 
 fn find_node() -> Option<PathBuf> {
-    // where node
     #[cfg(windows)]
     {
         if let Ok(out) = Command::new("where").arg("node").output() {
@@ -174,8 +201,115 @@ fn find_node() -> Option<PathBuf> {
         if p.exists() {
             return Some(p);
         }
+        return None;
     }
-    None
+
+    #[cfg(target_os = "macos")]
+    {
+        // GUI apps do not inherit shell PATH — probe known install locations.
+        let home = std::env::var("HOME").unwrap_or_default();
+        let candidates = [
+            "/opt/homebrew/bin/node",
+            "/usr/local/bin/node",
+            "/usr/bin/node",
+        ];
+        for c in candidates {
+            let p = PathBuf::from(c);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+        if !home.is_empty() {
+            let volta = PathBuf::from(&home).join(".volta").join("bin").join("node");
+            if volta.exists() {
+                return Some(volta);
+            }
+            // Newest nvm install
+            let nvm_dir = PathBuf::from(&home).join(".nvm").join("versions").join("node");
+            if let Ok(entries) = fs::read_dir(&nvm_dir) {
+                let mut versions: Vec<PathBuf> = entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect();
+                versions.sort();
+                if let Some(latest) = versions.last() {
+                    let node = latest.join("bin").join("node");
+                    if node.exists() {
+                        return Some(node);
+                    }
+                }
+            }
+            // fnm (default multi-arch layout)
+            let fnm_root = PathBuf::from(&home).join(".local").join("share").join("fnm");
+            let fnm_aliases = [
+                fnm_root.join("aliases").join("default").join("bin").join("node"),
+                fnm_root.join("current").join("bin").join("node"),
+            ];
+            for p in fnm_aliases {
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+            if let Ok(entries) = fs::read_dir(fnm_root.join("node-versions")) {
+                let mut versions: Vec<PathBuf> = entries
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect();
+                versions.sort();
+                if let Some(latest) = versions.last() {
+                    let node = latest.join("installation").join("bin").join("node");
+                    if node.exists() {
+                        return Some(node);
+                    }
+                }
+            }
+        }
+        // Last resort: login shell PATH (zsh is default on modern macOS)
+        if let Ok(out) = Command::new("zsh")
+            .args(["-ilc", "command -v node"])
+            .output()
+        {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout);
+                let first = s.lines().next().unwrap_or("").trim();
+                if !first.is_empty() {
+                    let p = PathBuf::from(first);
+                    if p.exists() {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+        if let Ok(out) = Command::new("which").arg("node").output() {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout);
+                let first = s.lines().next().unwrap_or("").trim();
+                if !first.is_empty() {
+                    let p = PathBuf::from(first);
+                    if p.exists() {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+        return None;
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Ok(out) = Command::new("which").arg("node").output() {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout);
+                let first = s.lines().next()?.trim();
+                if !first.is_empty() {
+                    return Some(PathBuf::from(first));
+                }
+            }
+        }
+        None
+    }
 }
 
 pub fn ensure_core_running() -> Result<(), String> {
@@ -191,7 +325,9 @@ pub fn ensure_core_running() -> Result<(), String> {
     let root = repo_root().ok_or_else(|| {
         "Could not find second-brain repo (set BRAIN_REPO_ROOT)".to_string()
     })?;
-    let node = find_node().ok_or_else(|| "node.exe not found on PATH".to_string())?;
+    let node = find_node().ok_or_else(|| {
+        "Node.js not found — install Node 22+ (Homebrew/nvm) or set PATH".to_string()
+    })?;
     let tsx = root.join("node_modules").join("tsx").join("dist").join("cli.mjs");
     let alt = root.join("node_modules").join("tsx").join("dist").join("cli.js");
     let tsx_cli = if tsx.exists() {
@@ -292,9 +428,27 @@ fn stop_core_on_port(p: u16) {
             .stderr(Stdio::null())
             .status();
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        let _ = p;
+        if let Ok(out) = Command::new("lsof")
+            .args(["-ti", &format!("tcp:{p}")])
+            .output()
+        {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout);
+                for line in s.lines() {
+                    let pid = line.trim();
+                    if pid.is_empty() {
+                        continue;
+                    }
+                    let _ = Command::new("kill")
+                        .args(["-9", pid])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                }
+            }
+        }
     }
 }
 

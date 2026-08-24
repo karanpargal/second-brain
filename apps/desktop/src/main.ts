@@ -14,13 +14,19 @@ async function refreshStatus() {
       paused_until: string | null;
       last_obs: string | null;
       spool_dir: string;
+      accessibility_trusted?: boolean;
+      capture_method?: string;
     }>("capture_status");
     const paused =
       s.paused_until && new Date(s.paused_until).getTime() > Date.now();
-    statusEl.className = "status " + (paused ? "bad" : "ok");
-    statusEl.textContent = paused
-      ? `Paused until ${s.paused_until}`
-      : `Capturing · last ${s.last_obs ?? "—"}`;
+    const axDenied =
+      s.capture_method === "ax" && s.accessibility_trusted === false;
+    statusEl.className = "status " + (paused || axDenied ? "bad" : "ok");
+    statusEl.textContent = axDenied
+      ? "Grant Accessibility in System Settings"
+      : paused
+        ? `Paused until ${s.paused_until}`
+        : `Capturing · last ${s.last_obs ?? "—"}`;
   } catch (e) {
     statusEl.className = "status bad";
     statusEl.textContent = `Capture status error: ${e}`;

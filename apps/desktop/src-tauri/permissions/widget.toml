@@ -10,5 +10,7 @@ commands.allow = [
   "api_token",
   "capture_status",
   "pause_capture",
-  "resume_capture"
+  "resume_capture",
+  "open_accessibility_settings",
+  "prompt_accessibility"
 ]

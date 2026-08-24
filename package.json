@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "license": "MIT",
-  "description": "Local-first ambient memory and open loops for Windows",
+  "description": "Local-first ambient memory and open loops for Windows and macOS",
   "repository": {
     "type": "git",
     "url": "https://github.com/karanpargal/second-brain.git"

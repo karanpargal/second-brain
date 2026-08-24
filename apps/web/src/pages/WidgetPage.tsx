@@ -483,6 +483,8 @@ export function WidgetPage() {
   const [googleOk, setGoogleOk] = useState<boolean | null>(null);
   const [githubOk, setGithubOk] = useState<boolean | null>(null);
   const [healthInfo, setHealthInfo] = useState<Health | null>(null);
+  const [axTrusted, setAxTrusted] = useState<boolean | null>(null);
+  const [captureMethod, setCaptureMethod] = useState<string | null>(null);
   const [voice, setVoice] = useState<string | null>(null);
   const [learnWant, setLearnWant] = useState("");
   const [askQ, setAskQ] = useState("");
@@ -557,6 +559,33 @@ export function WidgetPage() {
     const id = setInterval(() => void load(), 20_000);
     return () => clearInterval(id);
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refreshAx = async () => {
+      try {
+        const s = (await tauriInvoke("capture_status")) as {
+          accessibility_trusted?: boolean;
+          capture_method?: string;
+        } | null;
+        if (cancelled || !s) return;
+        if (typeof s.accessibility_trusted === "boolean") {
+          setAxTrusted(s.accessibility_trusted);
+        }
+        if (typeof s.capture_method === "string") {
+          setCaptureMethod(s.capture_method);
+        }
+      } catch {
+        /* browser / non-Tauri */
+      }
+    };
+    void refreshAx();
+    const id = setInterval(() => void refreshAx(), 8_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
   useEffect(() => {
     if (!viewOpen) return;
@@ -1386,6 +1415,26 @@ export function WidgetPage() {
             <div className="rounded-2xl bg-red-50 px-3 py-3 text-[12px] text-red-700 ring-1 ring-red-100">
               Core offline — reopen the Desktop app.
               <div className="mt-1 opacity-80">{err}</div>
+            </div>
+          )}
+          {axTrusted === false && captureMethod === "ax" && !err && (
+            <div className="rounded-2xl bg-amber-50 px-3 py-3 text-[12px] text-amber-950 ring-1 ring-amber-100">
+              <div className="font-medium">Grant Accessibility</div>
+              <div className="mt-1 text-[11px] leading-relaxed text-amber-900/80">
+                macOS capture reads on-screen text via Accessibility (no
+                screenshots). Enable Second Brain in System Settings → Privacy
+                &amp; Security → Accessibility, then reopen the app.
+              </div>
+              <button
+                type="button"
+                className="mt-2 rounded-xl bg-amber-900 px-3 py-1.5 text-[11px] font-medium text-white"
+                onClick={() => {
+                  void tauriInvoke("prompt_accessibility");
+                  void tauriInvoke("open_accessibility_settings");
+                }}
+              >
+                Open Accessibility settings
+              </button>
             </div>
           )}
           {!loading && !err && showingOpenEmpty && (

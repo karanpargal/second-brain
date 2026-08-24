@@ -55,6 +55,10 @@ function defaultDataDir(): string {
       process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
     return join(local, "second-brain");
   }
+  // macOS: ~/Library/Application Support/second-brain (matches Tauri BaseDirs)
+  if (process.platform === "darwin") {
+    return join(homedir(), "Library", "Application Support", "second-brain");
+  }
   return join(homedir(), ".local", "share", "second-brain");
 }
 

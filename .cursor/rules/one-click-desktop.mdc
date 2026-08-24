@@ -13,15 +13,15 @@ If a feature requires "first start the API in another terminal", that design is 
 
 ## Requirements (always)
 
-1. **Desktop is the entrypoint** — tray + floating widget (or main window). Double-click / Start Menu / Desktop shortcut launches **one** process path that the user recognizes as the app.
+1. **Desktop is the entrypoint** — tray + floating widget (or main window). Double-click / Start Menu / Desktop shortcut / `Second Brain.app` launches **one** process path that the user recognizes as the app.
 2. **Core auto-start** — On launch, the desktop shell **must**:
    - Start the local Node core (API + scheduler + static UI) if not already healthy
    - Wait until `/api/health` is OK
    - Load the widget/UI itself
    - Start ambient capture
-3. **No browser for primary UX** — Do not open Chrome/Edge as the default UI. Browser is optional overflow ("full dashboard") only.
+3. **No browser for primary UX** — Do not open Chrome/Edge/Safari as the default UI. Browser is optional overflow ("full dashboard") only.
 4. **Core stays child / supervised** — Prefer spawning core from the desktop process; quit of the app should stop owned core (or document intentional detach for always-on).
-5. **Shortcut points at the app** — Desktop/Start Menu shortcuts target the built `.exe` (or a tiny launcher that only starts that `.exe`), **not** a stack of npm scripts as the primary path.
+5. **Shortcut points at the app** — Desktop/Start Menu shortcuts target the built `.exe` / `.app` (or a tiny launcher that only starts that binary), **not** a stack of npm scripts as the primary path. On macOS the `.app` *is* the shortcut.
 6. **Dev terminals are for developers only** — `npm run dev:*` can exist for engineering; they are never the documented "how you use Second Brain" path.
 
 ## When implementing features

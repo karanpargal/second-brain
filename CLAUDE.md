@@ -23,18 +23,27 @@ See also: [`.cursor/rules/one-click-desktop.mdc`](.cursor/rules/one-click-deskto
 | `packages/worker` | Core daemon: HTTP API, SPA static files, cron |
 | `apps/web` | SPA; `/widget` is the floating surface |
 
-Data: `%LOCALAPPDATA%\second-brain\`  
+Data:
+
+- Windows: `%LOCALAPPDATA%\second-brain\`
+- macOS: `~/Library/Application Support/second-brain/`
+
 Primary UI route for the shell: `http://127.0.0.1:3000/widget`
 
 ## Packaging
 
 ```bash
-npm run package:app   # build web + tauri installer/exe
-npm run shortcut      # pin launcher to Desktop (exe-first)
+npm run package:app   # build web + tauri installer / .exe / .app
+npm run shortcut      # Windows: pin launcher to Desktop (exe-first)
+# macOS: drag Second Brain.app to /Applications
 ```
+
+See [scripts/macos-signing.md](scripts/macos-signing.md) for Gatekeeper / Accessibility notes.
 
 ## Local stack notes
 
 - LLM: Ollama on `127.0.0.1:11434` (not OpenRouter)
-- Capture: Windows window + browser history + OCR → spool JSONL
+- Capture: window titles + browser history + on-screen text → spool JSONL
+  - Windows: Win32 + WinRT OCR
+  - macOS: Accessibility (AX) text — no screenshots; requires Accessibility permission
 - Open loops: detect/auto-close in agents via local Ollama

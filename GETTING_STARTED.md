@@ -1,28 +1,33 @@
 # Getting started
 
-Second Brain is a **local-first** desktop agent for Windows. You install it once; day-to-day you only open the app. Your capture data and secrets stay on this PC (`%LOCALAPPDATA%\second-brain\`).
+Second Brain is a **local-first** desktop agent for **Windows and macOS**. You install it once; day-to-day you only open the app. Your capture data and secrets stay on this machine.
+
+| OS | Runtime data |
+|----|----------------|
+| Windows | `%LOCALAPPDATA%\second-brain\` |
+| macOS | `~/Library/Application Support/second-brain/` |
 
 ## What you need
 
-- Windows 10/11
+- Windows 10/11 **or** macOS 12+
 - [Node.js 22+](https://nodejs.org/)
 - [Ollama](https://ollama.com/) with at least one chat model
-- Optional: [Rust](https://rustup.rs/) + Visual Studio C++ tools if you build the Tauri `.exe` yourself
+- Optional: [Rust](https://rustup.rs/) (+ Visual Studio C++ tools on Windows, Xcode CLT on Mac) if you build the Tauri app yourself
 
 ## 1. Clone and install
 
-```powershell
+```bash
 git clone https://github.com/karanpargal/second-brain.git
 cd second-brain
-copy .env.example .env
+cp .env.example .env   # Windows: copy .env.example .env
 npm install
 ```
 
-Do **not** commit `.env`. Leave `BRAIN_MASTER_KEY` empty unless you know you need one — the desktop app generates a per-install key under `%LOCALAPPDATA%\second-brain\master.key`.
+Do **not** commit `.env`. Leave `BRAIN_MASTER_KEY` empty unless you know you need one — the desktop app generates a per-install key under the data directory (`master.key`).
 
 Pull a local model (either is fine):
 
-```powershell
+```bash
 ollama pull qwen2.5:14b
 ollama pull gpt-oss:20b   # optional
 ollama pull nomic-embed-text
@@ -32,7 +37,7 @@ Ollama should already be running (`ollama serve`). If port `11434` is in use, an
 
 ## 2. Database
 
-```powershell
+```bash
 npm run db:migrate
 npm run db:seed
 ```
@@ -41,18 +46,30 @@ npm run db:seed
 
 ### Daily use (recommended)
 
-Build a double-clickable app:
+**Windows:**
 
 ```powershell
 npm run package:app
 npm run shortcut
 ```
 
-Open **Second Brain** from the Desktop shortcut. It starts the local core, floating widget, and PC capture. You should not need extra terminals.
+Open **Second Brain** from the Desktop shortcut.
+
+**macOS** (build on a Mac):
+
+```bash
+npm run package:app
+# Optional: generate full icon set including .icns
+# npm run tauri icon path/to/icon-1024.png -w @second-brain/desktop
+```
+
+Open `Second Brain.app` (drag to `/Applications` if you like). Grant **Accessibility** when prompted so window titles and on-screen text capture work. See [scripts/macos-signing.md](scripts/macos-signing.md) if Gatekeeper blocks the app.
+
+The app starts the local core, floating widget, and PC capture. You should not need extra terminals.
 
 ### Engineers iterating on the UI
 
-```powershell
+```bash
 npm start
 ```
 
@@ -84,8 +101,8 @@ With the app (or core) running:
 
 ## Privacy notes
 
-- Runtime DB, spool, and `secrets.enc.json` live under `%LOCALAPPDATA%\second-brain\`, never in this git repo
-- OCR bitmaps are not saved; OCR text is purged after 30 days by default
+- Runtime DB, spool, and `secrets.enc.json` live under the OS data directory above, never in this git repo
+- Windows: OCR bitmaps are not saved. macOS: Accessibility text (no screenshots). Text is purged after 30 days by default
 - The HTTP API binds to `127.0.0.1` only
 
 ## Next
@@ -94,3 +111,4 @@ With the app (or core) running:
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — community standards
 - [SECURITY.md](SECURITY.md) — how to report a vulnerability
 - [README.md](README.md) — architecture map
+- [scripts/macos-signing.md](scripts/macos-signing.md) — macOS signing / Accessibility

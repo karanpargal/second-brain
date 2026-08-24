@@ -21,6 +21,10 @@ pub struct CaptureStatus {
     pub paused_until: Option<String>,
     pub last_obs: Option<String>,
     pub spool_dir: String,
+    /// macOS: Accessibility (AX) permission granted. Always true on Windows.
+    pub accessibility_trusted: bool,
+    /// Platform capture method: "ocr" (Windows) or "ax" (macOS).
+    pub capture_method: String,
 }
 
 struct Shared {
@@ -66,6 +70,14 @@ impl CaptureEngine {
             "lastpass.exe",
             "credentialuibroker.exe",
             "windowshellofaceserver.exe",
+            // macOS bundle ids / app names
+            "com.1password.1password",
+            "com.agilebits.onepassword7",
+            "com.bitwarden.desktop",
+            "org.keepassxc.keepassxc",
+            "1password",
+            "bitwarden",
+            "keepassxc",
         ] {
             block_exes.insert(e.to_string());
         }
@@ -145,6 +157,12 @@ impl CaptureEngine {
                 .or(control_pause),
             last_obs: s.last_obs.clone(),
             spool_dir: self.spool_dir.display().to_string(),
+            accessibility_trusted: platform_accessibility_trusted(),
+            capture_method: if cfg!(target_os = "macos") {
+                "ax".into()
+            } else {
+                "ocr".into()
+            },
         }
     }
 
@@ -415,6 +433,7 @@ impl CaptureEngine {
                 self.append_obs(json!({
                     "ts": Utc::now().to_rfc3339(),
                     "source": "ocr",
+                    "method": "ocr",
                     "app": app,
                     "exe": exe,
                     "window_title": title,
@@ -432,6 +451,110 @@ impl CaptureEngine {
                 let mut s = self.shared.lock();
                 s.last_ocr_at = std::time::Instant::now();
                 s.last_ocr_focus_key = focus_key;
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            if !crate::capture_mac::is_accessibility_trusted() {
+                return;
+            }
+            let Some((fg_title, fg_exe, fg_app)) = foreground_window_info() else {
+                return;
+            };
+            let (title, exe, app) = {
+                let mut s = self.shared.lock();
+                if fg_exe.to_lowercase().contains("second-brain") {
+                    if s.last_user_exe.is_empty() {
+                        return;
+                    }
+                    (
+                        s.last_user_title.clone(),
+                        s.last_user_exe.clone(),
+                        s.last_user_app.clone(),
+                    )
+                } else {
+                    s.last_user_title = fg_title.clone();
+                    s.last_user_exe = fg_exe.clone();
+                    s.last_user_app = fg_app.clone();
+                    s.last_user_pid = foreground_pid().unwrap_or(0);
+                    (fg_title, fg_exe, fg_app)
+                }
+            };
+            let chat = is_chat_surface(&app, &exe, &title);
+            let skip_desk = is_skip_ocr_desk(&app, &exe, &title, "");
+            let exe_l = exe.to_lowercase();
+            let title_l = title.to_lowercase();
+            let focus_key = format!("{exe}|{title}");
+            if skip_desk || title_l.contains("incognito") || title_l.contains("private browsing") {
+                let mut s = self.shared.lock();
+                s.last_ocr_at = std::time::Instant::now();
+                s.last_ocr_focus_key = focus_key;
+                return;
+            }
+            let interval = Duration::from_secs(if chat { 5 } else { 8 });
+            let should = {
+                let s = self.shared.lock();
+                s.last_ocr_at.elapsed() > interval
+            };
+            if !should {
+                return;
+            }
+            {
+                let mut s = self.shared.lock();
+                if s.block_exes.iter().any(|b| exe_l.contains(b)) {
+                    s.last_ocr_at = std::time::Instant::now();
+                    s.last_ocr_focus_key = focus_key;
+                    return;
+                }
+                if s.block_domains.iter().any(|b| title_l.contains(b)) {
+                    s.last_ocr_at = std::time::Instant::now();
+                    s.last_ocr_focus_key = focus_key;
+                    return;
+                }
+            }
+
+            let Some(text) = crate::capture_mac::focused_window_text() else {
+                let mut s = self.shared.lock();
+                s.last_ocr_at = std::time::Instant::now();
+                s.last_ocr_focus_key = focus_key;
+                return;
+            };
+            let text = {
+                let s = self.shared.lock();
+                filter_blocked_ocr_text(&text, &s.block_domains)
+            };
+            let text_hash = fnv1a_64(text.as_bytes());
+            let skip = {
+                let s = self.shared.lock();
+                s.last_ocr_text_hash != 0 && s.last_ocr_text_hash == text_hash
+            };
+            {
+                let mut s = self.shared.lock();
+                s.last_ocr_at = std::time::Instant::now();
+                s.last_ocr_text_hash = text_hash;
+                s.last_ocr_focus_key = focus_key;
+            }
+            if skip || text.trim().len() < 8 {
+                return;
+            }
+            let clipped: String = text.chars().take(8_000).collect();
+            self.append_obs(json!({
+                "ts": Utc::now().to_rfc3339(),
+                "source": "ocr",
+                "method": "ax",
+                "app": app,
+                "exe": exe,
+                "window_title": title,
+                "text": clipped,
+                "dwell_ms": 0,
+                "redacted": false,
+                "chat": chat,
+                "fullscreen": false,
+                "window_ocr": true
+            }));
+            if chat {
+                self.wake_core_loops();
             }
         }
     }
@@ -482,7 +605,11 @@ impl CaptureEngine {
 }
 
 fn default_data_dir() -> PathBuf {
+    if let Ok(p) = std::env::var("BRAIN_DATA_DIR") {
+        return PathBuf::from(p);
+    }
     if let Some(base) = BaseDirs::new() {
+        // Windows: LocalAppData; macOS: Application Support — both via data_local_dir()
         return base.data_local_dir().join("second-brain");
     }
     PathBuf::from("second-brain")
@@ -599,25 +726,75 @@ fn load_control_into(
 fn browser_history_paths() -> Vec<(&'static str, PathBuf)> {
     let mut out = Vec::new();
     if let Some(base) = BaseDirs::new() {
-        let local = base.data_local_dir();
-        out.push((
-            "chrome",
-            local
-                .join("Google")
-                .join("Chrome")
-                .join("User Data")
-                .join("Default")
-                .join("History"),
-        ));
-        out.push((
-            "edge",
-            local
-                .join("Microsoft")
-                .join("Edge")
-                .join("User Data")
-                .join("Default")
-                .join("History"),
-        ));
+        #[cfg(windows)]
+        {
+            let local = base.data_local_dir();
+            out.push((
+                "chrome",
+                local
+                    .join("Google")
+                    .join("Chrome")
+                    .join("User Data")
+                    .join("Default")
+                    .join("History"),
+            ));
+            out.push((
+                "edge",
+                local
+                    .join("Microsoft")
+                    .join("Edge")
+                    .join("User Data")
+                    .join("Default")
+                    .join("History"),
+            ));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // Application Support — no "User Data" segment (except Arc).
+            let support = base.data_local_dir();
+            out.push((
+                "chrome",
+                support
+                    .join("Google")
+                    .join("Chrome")
+                    .join("Default")
+                    .join("History"),
+            ));
+            out.push((
+                "edge",
+                support
+                    .join("Microsoft Edge")
+                    .join("Default")
+                    .join("History"),
+            ));
+            out.push((
+                "brave",
+                support
+                    .join("BraveSoftware")
+                    .join("Brave-Browser")
+                    .join("Default")
+                    .join("History"),
+            ));
+            out.push((
+                "arc",
+                support
+                    .join("Arc")
+                    .join("User Data")
+                    .join("Default")
+                    .join("History"),
+            ));
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let home = base.home_dir();
+            out.push((
+                "chrome",
+                home.join(".config")
+                    .join("google-chrome")
+                    .join("Default")
+                    .join("History"),
+            ));
+        }
     }
     out
 }
@@ -658,7 +835,11 @@ fn idle_seconds() -> u32 {
         }
         0
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::capture_mac::idle_seconds()
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         0
     }
@@ -709,9 +890,24 @@ fn foreground_window_info() -> Option<(String, String, String)> {
             Some((title, exe_name, app))
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::capture_mac::foreground_window_info()
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         None
+    }
+}
+
+fn platform_accessibility_trusted() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::capture_mac::is_accessibility_trusted()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
     }
 }
 
@@ -840,7 +1036,6 @@ fn phash_from_rgb(width: u32, height: u32, rgba: &[u8]) -> u64 {
     hash ^ u64::from_le_bytes(digest[0..8].try_into().unwrap_or([0; 8]))
 }
 
-#[cfg(windows)]
 fn filter_blocked_ocr_text(text: &str, block_domains: &HashSet<String>) -> String {
     if block_domains.is_empty() {
         return text.to_string();
@@ -875,7 +1070,11 @@ fn foreground_pid() -> Option<u32> {
             }
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::capture_mac::foreground_pid()
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         None
     }
@@ -1231,7 +1430,8 @@ fn ocr_debug(_msg: &str) {}
 fn ocr_debug(_msg: &str) {}
 
 #[cfg(not(windows))]
-fn capture_target_ocr(_pid: u32, _title: &str) -> Option<(String, u64, bool)> {
+#[allow(dead_code)]
+fn capture_target_ocr(_pid: u32, _title: &str, _crop_thread: bool) -> Option<(String, u64, bool)> {
     None
 }
 
@@ -1239,9 +1439,4 @@ fn capture_target_ocr(_pid: u32, _title: &str) -> Option<(String, u64, bool)> {
 #[allow(dead_code)]
 fn capture_fullscreen_ocr() -> Option<(String, u64)> {
     None
-}
-
-#[cfg(not(windows))]
-fn filter_blocked_ocr_text(text: &str, _block_domains: &HashSet<String>) -> String {
-    text.to_string()
 }

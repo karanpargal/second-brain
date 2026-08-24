@@ -29,11 +29,21 @@ function loadEnvPort() {
 const PORT = Number(process.env.PORT ?? loadEnvPort());
 const HOST = process.env.HOST ?? "127.0.0.1";
 const BASE = `http://${HOST}:${PORT}`;
-const PID_FILE = join(
-  process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"),
-  "second-brain",
-  "core.pid",
-);
+function defaultDataDir() {
+  if (process.env.BRAIN_DATA_DIR) return process.env.BRAIN_DATA_DIR;
+  if (process.platform === "win32") {
+    return join(
+      process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"),
+      "second-brain",
+    );
+  }
+  if (process.platform === "darwin") {
+    return join(homedir(), "Library", "Application Support", "second-brain");
+  }
+  return join(homedir(), ".local", "share", "second-brain");
+}
+
+const PID_FILE = join(defaultDataDir(), "core.pid");
 
 async function health() {
   try {
@@ -79,9 +89,18 @@ function startCore() {
 }
 
 function findDesktopExe() {
-  const names = ["second-brain-desktop.exe", "Second Brain.exe"];
+  const names =
+    process.platform === "darwin"
+      ? [
+          "Second Brain.app/Contents/MacOS/second-brain-desktop",
+          "second-brain-desktop",
+        ]
+      : process.platform === "win32"
+        ? ["second-brain-desktop.exe", "Second Brain.exe"]
+        : ["second-brain-desktop"];
   const dirs = [
     join(ROOT, "apps", "desktop", "src-tauri", "target", "release"),
+    join(ROOT, "apps", "desktop", "src-tauri", "target", "release", "bundle", "macos"),
     join(ROOT, "apps", "desktop", "src-tauri", "target", "debug"),
     process.env.CARGO_TARGET_DIR
       ? join(process.env.CARGO_TARGET_DIR, "release")
@@ -151,6 +170,10 @@ function openUrl(url) {
   const { exec } = require("node:child_process");
   if (process.platform === "win32") {
     exec(`start "" "${url}"`, { windowsHide: true });
+  } else if (process.platform === "darwin") {
+    exec(`open "${url}"`);
+  } else {
+    exec(`xdg-open "${url}"`);
   }
 }
 

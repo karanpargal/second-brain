@@ -1,6 +1,6 @@
 # Second Brain
 
-Local-first ambient memory for Windows. The desktop app captures what you work on (windows, browser history, on-screen OCR), finds **open loops**, and keeps context searchable — mostly on-device via [Ollama](https://ollama.com/). Optional Gmail / Calendar / GitHub are **read-only**. Optional cloud models apply only to **Ask**, if you turn them on.
+Local-first ambient memory for **Windows and macOS**. The desktop app captures what you work on (windows, browser history, on-screen text), finds **open loops**, and keeps context searchable — mostly on-device via [Ollama](https://ollama.com/). Optional Gmail / Calendar / GitHub are **read-only**. Optional cloud models apply only to **Ask**, if you turn them on.
 
 **Propose-only** — nothing is sent or modified in external accounts unless you explicitly connect that provider. Detected loops wait for you (or auto-close when evidence says they’re done).
 
@@ -10,11 +10,25 @@ Local-first ambient memory for Windows. The desktop app captures what you work o
 
 **Daily use: open Second Brain.** Do not run npm commands every morning.
 
+### Windows
+
 ```powershell
 npm install
 npm run package:app    # build the desktop .exe
 npm run shortcut       # Desktop icon → that .exe
 ```
+
+### macOS
+
+Build on a Mac (Tauri does not cross-compile from Windows):
+
+```bash
+npm install
+npm run package:app    # build Second Brain.app / .dmg
+# Drag the .app to /Applications — that is the shortcut
+```
+
+Grant **Accessibility** when prompted (System Settings → Privacy & Security → Accessibility). Capture uses the Accessibility tree for on-screen text — no screenshots. See [scripts/macos-signing.md](scripts/macos-signing.md) for signing / Gatekeeper notes.
 
 The app starts local core, the floating widget, and capture by itself.
 
@@ -34,13 +48,16 @@ Full walkthrough (Ollama, Google, voice, cloud Ask): **[GETTING_STARTED.md](GETT
 | `apps/web` | Vite + React SPA (`/widget` is the floating surface) |
 | `apps/desktop` | Tauri tray app + Rust capture engine |
 
-**Runtime data (not in git):** `%LOCALAPPDATA%\second-brain\` — `brain.db`, spool, encrypted secrets.
+**Runtime data (not in git):**
+
+- Windows: `%LOCALAPPDATA%\second-brain\`
+- macOS: `~/Library/Application Support/second-brain/`
 
 ## Developer terminals
 
 These are for engineering only — never the documented user path.
 
-```powershell
+```bash
 npm run dev:worker   # API only
 npm run dev:web      # Vite HMR
 npm run dev:desktop  # Tauri
@@ -52,7 +69,7 @@ UI once core is up: `http://127.0.0.1:3000/widget`
 
 ### CLI
 
-```powershell
+```bash
 npm run brain -- help
 npm run brain -- ingest
 npm run brain -- capture
@@ -63,8 +80,8 @@ npm run brain -- status
 
 ## Privacy
 
-- Capture gate: exe blocklist, domain blocklist, idle suppression, tray pause
-- OCR bitmaps are never written to disk; OCR text is purged after 30 days (configurable)
+- Capture gate: exe/bundle blocklist, domain blocklist, idle suppression, tray pause
+- On Windows, OCR bitmaps are never written to disk; on macOS, Accessibility text is used instead of screenshots. Text is purged after 30 days (configurable)
 - Secrets encrypted with a per-install master key (AES-256-GCM)
 - API binds to `127.0.0.1` only
 - Enabling a **hosted Ask model** sends Ask context (including open-loop titles) to that provider — leave it off to stay fully local

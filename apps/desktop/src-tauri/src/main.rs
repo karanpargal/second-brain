@@ -3,6 +3,9 @@
 
 mod capture;
 mod core;
+#[cfg(target_os = "macos")]
+mod capture_mac;
+
 use capture::{CaptureEngine, CaptureStatus};
 use std::sync::Arc;
 use tauri::{
@@ -103,6 +106,32 @@ fn quit_app(app: AppHandle) -> Result<(), String> {
     core::stop_core_if_owned();
     app.exit(0);
     Ok(())
+}
+
+#[tauri::command]
+fn open_accessibility_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        capture_mac::open_accessibility_settings();
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn prompt_accessibility() -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        capture_mac::ensure_accessibility_prompt();
+        Ok(capture_mac::is_accessibility_trusted())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(true)
+    }
 }
 
 fn show_main(app: &AppHandle) {
@@ -262,9 +291,18 @@ fn main() {
             set_widget_mode,
             set_always_on_top,
             hide_widget,
-            quit_app
+            quit_app,
+            open_accessibility_settings,
+            prompt_accessibility
         ])
         .setup(move |app| {
+            #[cfg(target_os = "macos")]
+            {
+                // Menu-bar / tray app — no Dock icon (mirrors skipTaskbar on Windows).
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                capture_mac::ensure_accessibility_prompt();
+            }
+
             // Paint an immediate loading screen so the shell is responsive while
             // the core (possibly a cold tsx compile) comes up on a background
             // thread. Blocking here is what caused the "Not Responding" window.
@@ -322,10 +360,7 @@ fn main() {
                 let notify_app = app.handle().clone();
                 let notify_tray = _tray.clone();
                 std::thread::spawn(move || {
-                    let dir = std::path::PathBuf::from(
-                        std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into()),
-                    )
-                    .join("second-brain");
+                    let dir = core::data_dir();
                     let path = dir.join("pending-notifications.json");
                     let mut last_sig = String::new();
                     loop {
@@ -407,11 +442,7 @@ fn main() {
                 let result = core::ensure_core_running();
                 if let Err(ref e) = result {
                     eprintln!("[second-brain] core start: {e}");
-                    let log = std::path::PathBuf::from(
-                        std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into()),
-                    )
-                    .join("second-brain")
-                    .join("desktop.log");
+                    let log = core::data_dir().join("desktop.log");
                     let _ =
                         std::fs::create_dir_all(log.parent().unwrap_or(std::path::Path::new(".")));
                     let line = format!(

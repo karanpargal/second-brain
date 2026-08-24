@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Second Brain uses the microphone for push-to-talk Ask in the floating widget.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Second Brain may use Apple Events for local automation when you ask it to.</string>
+    <key>LSHandlerRank</key>
+    <string>None</string>
+  </dict>
+</plist>
