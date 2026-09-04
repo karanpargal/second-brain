@@ -5,6 +5,7 @@ import {
   classifyMailLoop,
   scoreChatAction,
 } from "@second-brain/agents";
+import { segmentChatCapture } from "@second-brain/core";
 
 /** Copied from packages/agents/src/loops.ts */
 const COMMITMENT_RE =
@@ -25,8 +26,13 @@ export type EvalFixture = {
   source: FixtureSource;
   label: FixtureLabel;
   expectedTitleContains?: string;
+  /** Substrings that must never reach a title — browser chrome, the user's name. */
+  expectedTitleNotContains?: string[];
+  /** Names that must never become the counterparty. */
+  expectedWhoNot?: string[];
   input: {
     app?: string;
+    exe?: string;
     windowTitle?: string;
     url?: string;
     text?: string;
@@ -41,6 +47,7 @@ export type ScoreResult = {
   predicted: boolean;
   confidence: number;
   title?: string;
+  who?: string;
 };
 
 function looksLikePromo(input: EvalFixture["input"]): boolean {
@@ -86,17 +93,36 @@ function scoreItemHeuristic(input: EvalFixture["input"]): ScoreResult {
 }
 
 function scoreChat(input: EvalFixture["input"]): ScoreResult {
+  // Ingest segments a chat capture before storing it; mirror that here so a
+  // fixture holding a raw window dump is scored the way production sees it.
+  const raw = input.text ?? input.body ?? "";
+  const segment = segmentChatCapture(raw, {
+    app: input.app,
+    exe: input.exe,
+    windowTitle: input.windowTitle ?? input.title,
+    url: input.url,
+  });
+  if (segment.view === "list") return { predicted: false, confidence: 0 };
+  const text =
+    segment.view === "thread"
+      ? [segment.header ? `HEADER: ${segment.header}` : "", segment.thread]
+          .filter(Boolean)
+          .join("\n")
+      : (segment.thread ?? raw);
+
   const hit = scoreChatAction({
     windowTitle: input.windowTitle ?? input.title,
     app: input.app,
+    exe: input.exe,
     url: input.url,
-    text: input.text ?? input.body,
+    text,
   });
   if (!hit) return { predicted: false, confidence: 0 };
   return {
     predicted: true,
     confidence: Math.min(0.95, hit.score),
     title: hit.actionTitle,
+    who: hit.peer,
   };
 }
 

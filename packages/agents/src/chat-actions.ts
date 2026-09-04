@@ -4,7 +4,13 @@
  * Contact names stay off Improve. Local LLM only (skipHosted).
  */
 
-import { looksLikeMarket } from "@second-brain/core";
+import {
+  isBrowserSurface,
+  isSelfName,
+  looksLikeMarket,
+  segmentChatCapture,
+  selfNamesFromSurface,
+} from "@second-brain/core";
 
 export type ChatApp =
   | "WhatsApp"
@@ -15,7 +21,7 @@ export type ChatApp =
   | "Teams";
 
 const GENERIC_PEER_RE =
-  /^(whatsapp|telegram|telegram desktop|chats?|status|archived|settings|saved messages|calls?|communities|starred|unread|this chat|connecting|loading)$/i;
+  /^(whatsapp|whatsapp web|telegram|telegram web|telegram desktop|chats?|new chats|status|archived|settings|saved messages|calls?|communities|starred|unread|this chat|connecting|loading|never miss a message!?|\d+ notifications?)$/i;
 
 const EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
 
@@ -27,7 +33,17 @@ const CHAT_CHROME_STRIP_RE =
   /\b(type a message|search or start new chat|click here for contact info|message yourself|missed voice call|missed video call|voice message|telegram desktop|whatsapp|telegram)\b/gi;
 
 const ACTIONABLE_CHAT_RE =
-  /\b(can you|could you|would you|please (send|share|call|confirm|check|review|reply|forward|ping)|send me|share (the|it|with)|call me|ping me|remind me|don't forget|do not forget|when (will|are|is)|are you (coming|free|around)|let'?s (meet|call|sync)|need you to|waiting (on|for)|confirm (the|by)|review (this|the)|by (tonight|tomorrow|tornorrow|eod|friday|monday|evening)|tomorrow at|meeting at|what time|free at|i('ll| will)|i send the|let me (send|check|ask)|action item|todo|follow[- ]?up|bhej|call kar|aa ?ja|kal (mil|call)|kab (tak|aa))\b/i;
+  /\b(can you|could you|would you|please (send|share|call|confirm|check|review|reply|forward|ping)|send me|share (the|it|with)|call me|ping me|remind me|don't forget|do not forget|when (will|are|is)|are you (coming|free|around)|let'?s (meet|call|sync)|need you to|waiting (on|for)|confirm (the|by)|review (this|the)|by (tonight|tomorrow|tornorrow|eod|friday|monday|evening)|tomorrow at|meeting at|what time|free at|i('ll| will)|i (need|have) to|i send the|let me (send|check|ask)|action item|todo|follow[- ]?up|bhej|call kar|aa ?ja|kal (mil|call)|kab (tak|aa))\b/i;
+
+/** The user committing to something, as opposed to being asked for it. */
+export const MY_PROMISE_RE =
+  /\b(i('ll| will)|i need to|i have to|i should|i send the|let me (send|share|check|ask))\b/i;
+
+/**
+ * An outgoing message. The macOS capture prefixes right-aligned bubbles with
+ * `You: `; WhatsApp and Telegram print the same prefix on sidebar previews.
+ */
+export const OUTGOING_PREFIX_RE = /^\s*you\s*:/i;
 
 const IDLE_CHAT_RE =
   /^(ok+|okay|k+|lol+|haha+|hehe+|thanks?|thx|ty|gm+|gn+|yes|yeah|yep|no|nah|hmm+|nice|cool|great|wow|👍|🙏|😂|❤️|ok sir|done|noted)\.?$/i;
@@ -69,21 +85,34 @@ export function parseChatPeer(
 ): { peer: string; app: ChatApp } | null {
   const chatApp = detectChatApp(app, exe, title, url);
   if (!chatApp) return null;
+  const surface = { app, exe, windowTitle: title, url };
+  const selfNames = selfNamesFromSurface(surface);
 
-  const fromTitle = peerFromWindowTitle(title, chatApp);
+  // A web chat client titles its tab with the site and the browser profile —
+  // "Telegram Web - Google Chrome – Karan" — never with the contact. Only a
+  // native window ("Farhan - WhatsApp") carries the peer in its title.
+  const fromTitle = isBrowserSurface(surface)
+    ? null
+    : peerFromWindowTitle(title, chatApp, selfNames);
   if (fromTitle) return { peer: fromTitle, app: chatApp };
-  const fromOcr = peerFromChatOcr(ocrText ?? "", chatApp);
+  const fromOcr = peerFromChatOcr(ocrText ?? "", chatApp, surface, selfNames);
   if (fromOcr) return { peer: fromOcr, app: chatApp };
   return null;
 }
 
-function peerFromWindowTitle(title: string, chatApp: ChatApp): string | null {
+function peerFromWindowTitle(
+  title: string,
+  chatApp: ChatApp,
+  selfNames: string[],
+): string | null {
   if (!title.trim()) return null;
   let t = title
     .replace(/^\(\d+\)\s+/, "")
     .replace(/\s+\(\d+\)$/, "")
+    // Consume the browser name *and everything after it* — Chrome appends the
+    // profile name ("… - Google Chrome – Karan"), which is the user, not a peer.
     .replace(
-      /\s+[-–—]\s+(Google Chrome|Microsoft Edge|Mozilla Firefox)$/i,
+      /\s*[-–—|]\s*(Google Chrome|Chromium|Chrome|Microsoft Edge|Edge|Mozilla Firefox|Firefox|Safari|Arc|Brave|Opera|Vivaldi)\b[\s\S]*$/i,
       "",
     )
     .trim();
@@ -92,13 +121,23 @@ function peerFromWindowTitle(title: string, chatApp: ChatApp): string | null {
       /\s+[-–—]\s+(WhatsApp|Telegram Desktop|Telegram|Slack|Discord|Signal|Microsoft Teams|Teams).*$/i,
       "",
     )
+    // Native titles name the signed-in account, not the thread.
+    .replace(/^(Telegram|WhatsApp|Signal)\s*[@(].*$/i, "")
     .trim();
-  return sanitizePeer(t, chatApp);
+  return sanitizePeer(t, chatApp, selfNames);
 }
 
-function sanitizePeer(t: string, _app: ChatApp): string | null {
+function sanitizePeer(
+  t: string,
+  _app: ChatApp,
+  selfNames: string[] = [],
+): string | null {
   const s = t.replace(/\s+/g, " ").trim();
   if (!s || GENERIC_PEER_RE.test(s)) return null;
+  if (isSelfName(s, selfNames)) return null;
+  if (/(google chrome|chromium|microsoft edge|mozilla firefox|safari|brave|vivaldi)/i.test(s)) {
+    return null;
+  }
   if (s.length < 2 || s.length > 60) return null;
   if (EMAIL_RE.test(s)) return null;
   if (/^(https?:|www\.)/i.test(s)) return null;
@@ -117,6 +156,10 @@ function sanitizePeer(t: string, _app: ChatApp): string | null {
   }
   if (/["']/.test(s) || /N"\s*v"/.test(s)) return null;
   if (/^(i will|i send|can you|could you|please |you:)/i.test(s)) return null;
+  // A name is not a sentence. Without this the fallback line scan happily made
+  // "I need to complete Trench changes by tomorrow" the person to follow up with.
+  if (s.split(/\s+/).length > 5) return null;
+  if (MY_PROMISE_RE.test(s) || ACTIONABLE_CHAT_RE.test(s)) return null;
   return s;
 }
 
@@ -132,11 +175,23 @@ function headerNameBits(headerLine: string): string[] {
     .filter((s) => s.length >= 2);
 }
 
-function peerFromChatOcr(text: string, chatApp: ChatApp): string | null {
+function peerFromChatOcr(
+  text: string,
+  chatApp: ChatApp,
+  surface: Parameters<typeof segmentChatCapture>[1] = {},
+  selfNames: string[] = [],
+): string | null {
   if (!text.trim()) return null;
   const headerLine = text.match(/^HEADER:\s*(.+)$/im)?.[1] ?? "";
   for (const bit of headerNameBits(headerLine)) {
-    const peer = sanitizePeer(bit, chatApp);
+    const peer = sanitizePeer(bit, chatApp, selfNames);
+    if (peer) return peer;
+  }
+
+  // The thread header names the contact; the sidebar names fifteen other people.
+  const segment = segmentChatCapture(text, surface);
+  if (segment.header) {
+    const peer = sanitizePeer(segment.header, chatApp, selfNames);
     if (peer) return peer;
   }
 
@@ -146,16 +201,19 @@ function peerFromChatOcr(text: string, chatApp: ChatApp): string | null {
       /start a new chat\s+(.+?)\s+(click here|all\b|unread|favorites|favou?rites|type a)/i,
     );
     if (header?.[1]) {
-      const peer = sanitizePeer(header[1].trim(), chatApp);
+      const peer = sanitizePeer(header[1].trim(), chatApp, selfNames);
       if (peer) return peer;
     }
   }
+  // Scanning the top of the blob only makes sense when nothing above told us
+  // where the thread starts — otherwise it picks up window and sidebar chrome.
+  if (segment.view !== "unknown") return null;
   const lines = text
     .split(/\n+/)
     .map((l) => l.trim())
     .filter((l) => l.length > 0 && !/^HEADER:/i.test(l));
   for (const line of lines.slice(0, 6)) {
-    const peer = sanitizePeer(line, chatApp);
+    const peer = sanitizePeer(line, chatApp, selfNames);
     if (peer) return peer;
   }
   return null;
@@ -198,6 +256,10 @@ export type ChatActionHit = {
   actionTitle: string;
   snippet: string;
   topic?: string;
+  /**
+   * Who wrote the line this came from. `undefined` means the capture does not
+   * say — screen text alone often cannot, and guessing inverts the task.
+   */
   fromMe?: boolean;
   peer?: string;
 };
@@ -217,19 +279,26 @@ function isOcrGarbage(s: string): boolean {
   return false;
 }
 
+/** The newest commitment wins — a thread repeats and supersedes itself. */
+function lastMatch(body: string, re: RegExp): string | undefined {
+  const all = [...body.matchAll(new RegExp(re.source, `${re.flags.replace(/g/g, "")}g`))];
+  return all.length > 0 ? all[all.length - 1][0] : undefined;
+}
+
 function topicFromSnippet(text: string): string | undefined {
   const body = softenOcr(text.replace(/^HEADER:.*$/im, " "));
   const patterns = [
     /\bi will send[\s\S]{0,70}?(tomorrow|tornorrow|tonwrrow|tonight|friday|monday|eod)\b/i,
     /\bi('ll| will) [\s\S]{0,70}?(tomorrow|tornorrow|tonwrrow|tonight|friday|monday)\b/i,
+    /\bi (need|have) to [\s\S]{0,70}?(tomorrow|tonight|today|friday|monday|eod)\b/i,
     /\bi send the[\s\S]{0,50}?(tomorrow|tornorrow|tonight)\b/i,
     /\bcan you [\s\S]{0,70}?(tomorrow|tonight|\?)/i,
     /\bplease [\s\S]{0,60}?(tomorrow|tonight|confirm|send)\b/i,
   ];
   for (const re of patterns) {
-    const m = body.match(re);
-    if (!m?.[0] || isOcrGarbage(m[0])) continue;
-    let chunk = softenOcr(m[0])
+    const hit = lastMatch(body, re);
+    if (!hit || isOcrGarbage(hit)) continue;
+    let chunk = softenOcr(hit)
       .replace(/\s+\d{1,2}:\d{2}\b[\s\S]*$/i, "")
       .replace(/\s{2,}/g, " ")
       .trim();
@@ -287,7 +356,7 @@ export function scoreChatAction(input: {
     input.url,
     input.text,
   );
-  const peer = parsed?.peer ?? "this chat";
+  const peer = parsed?.peer;
 
   const lines = raw
     .split(/\n+/)
@@ -295,25 +364,57 @@ export function scoreChatAction(input: {
     .filter((l) => l.length > 1 && !CHAT_CHROME_LINE_RE.test(l) && !IDLE_CHAT_RE.test(l));
 
   const topic = topicFromSnippet(raw) ?? topicFromSnippet(cleaned);
-  const fromMe =
-    /\byou:\s/i.test(raw) ||
-    /\bi('ll| will)\b/i.test(raw) ||
-    /\bi send the\b/i.test(raw);
+  const fromMe = directionOf(raw, topic, input);
   const snippet = softenOcr(
     (topic ?? lines.slice(-2).join(" · ") ?? cleaned)
       .replace(/["']+/g, "")
       .slice(0, 200),
   );
+  // Only claim "follow up with <peer>" when we know both the peer and that the
+  // commitment was theirs. Otherwise the topic seeds the extractor and the model
+  // names the person from the thread.
   const actionTitle =
-    fromMe && topic
+    fromMe === true && topic
       ? selfNoteTitle(topic)
-      : chatFollowUpTitle(peer, chatApp, topic ? softenOcr(topic) : undefined);
-  return {
-    score: 0.78,
-    actionTitle,
-    snippet,
-    topic,
-    fromMe,
-    peer: peer === "this chat" ? undefined : peer,
-  };
+      : peer
+        ? chatFollowUpTitle(peer, chatApp, topic ? softenOcr(topic) : undefined)
+        : topic
+          ? softenOcr(topic)
+          : null;
+  if (!actionTitle) return null;
+  return { score: 0.78, actionTitle, snippet, topic, fromMe, peer };
+}
+
+/**
+ * `true` the user wrote it, `false` the other person did, `undefined` unknown.
+ *
+ * A first-person line is not evidence — the other person's messages read
+ * "I will …" too, and treating that as the user's own promise is what turned
+ * their commitment into the user's task. Only an explicit outgoing marker
+ * counts: the capture's `You: ` prefix, or the sidebar row for this thread.
+ */
+function directionOf(
+  raw: string,
+  topic: string | undefined,
+  input: { app?: string | null; exe?: string | null; windowTitle?: string | null; url?: string | null },
+): boolean | undefined {
+  const markedLines = raw.split(/\n/).some((l) => OUTGOING_PREFIX_RE.test(l));
+  if (raw.includes("\n") && markedLines && topic) {
+    const needle = softenOcr(topic).slice(0, 24).toLowerCase();
+    const line = raw
+      .split(/\n/)
+      .find((l) => softenOcr(l).toLowerCase().includes(needle));
+    if (line) return OUTGOING_PREFIX_RE.test(line);
+  }
+  const row = segmentChatCapture(raw, {
+    app: input.app,
+    exe: input.exe,
+    windowTitle: input.windowTitle,
+    url: input.url,
+  }).peerRow;
+  if (row?.fromMe) return true;
+  // Single-line OCR carries no line structure; fall back to the pairing that
+  // has always worked there — an outgoing marker plus a first-person promise.
+  if (/\byou\s*:/i.test(raw) && MY_PROMISE_RE.test(raw)) return true;
+  return undefined;
 }

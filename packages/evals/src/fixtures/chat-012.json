@@ -1,0 +1,21 @@
+{
+  "id": "chat-012",
+  "source": "chat",
+  "label": "is_loop",
+  "expectedTitleContains": "Atlas",
+  "expectedTitleNotContains": [
+    "Google Chrome",
+    "Telegram Web",
+    "Dev"
+  ],
+  "expectedWhoNot": [
+    "Dev",
+    "Telegram Web"
+  ],
+  "input": {
+    "app": "Google Chrome",
+    "exe": "com.google.Chrome",
+    "windowTitle": "Telegram Web - Google Chrome – Dev",
+    "text": "Telegram Web - Google Chrome – Dev\nTelegram Web - Google Chrome – Dev\nTelegram Web\n\nSearch\nNew Chats\n\n\nUPDATE\nTo get missing image descriptions, open the context menu.\n/e836cc78-8317-4577-aee3-2e6e9650fbe7\nMira\n💕\nlast seen 3 hours ago\n\n\n\n\nToday\nI need to complete Atlas changes by tomorrow\n4 September 2026, 21:54:39\n\n09:54 PM\n\n\nMessage\n\n\n     \n\n\n\n\n\n\nOpen call\nEnd\nTab search\nPull requests · atlas-ag/atlas_client_v2 - Memory usage - 415 MB\nClose\nTelegram Web\nClose\nNew tab\nOpen Gemini in Chrome\nthis button also has an action to zoom the window"
+  }
+}

@@ -429,7 +429,7 @@ impl CaptureEngine {
                 if skip || text.trim().len() < 8 {
                     return;
                 }
-                let clipped: String = text.chars().take(8_000).collect();
+                let clipped = clip_capture_text(&text, chat);
                 self.append_obs(json!({
                     "ts": Utc::now().to_rfc3339(),
                     "source": "ocr",
@@ -462,7 +462,8 @@ impl CaptureEngine {
             let Some((fg_title, fg_exe, fg_app)) = foreground_window_info() else {
                 return;
             };
-            let (title, exe, app) = {
+            // Widget is always-on-top — read the last real app underneath it
+            let (title, exe, app, target_pid) = {
                 let mut s = self.shared.lock();
                 if fg_exe.to_lowercase().contains("second-brain") {
                     if s.last_user_exe.is_empty() {
@@ -472,13 +473,15 @@ impl CaptureEngine {
                         s.last_user_title.clone(),
                         s.last_user_exe.clone(),
                         s.last_user_app.clone(),
+                        s.last_user_pid,
                     )
                 } else {
+                    let pid = foreground_pid().unwrap_or(0);
                     s.last_user_title = fg_title.clone();
                     s.last_user_exe = fg_exe.clone();
                     s.last_user_app = fg_app.clone();
-                    s.last_user_pid = foreground_pid().unwrap_or(0);
-                    (fg_title, fg_exe, fg_app)
+                    s.last_user_pid = pid;
+                    (fg_title, fg_exe, fg_app, pid)
                 }
             };
             let chat = is_chat_surface(&app, &exe, &title);
@@ -514,7 +517,18 @@ impl CaptureEngine {
                 }
             }
 
-            let Some(text) = crate::capture_mac::focused_window_text() else {
+            // Diagnostic: `touch <data_dir>/ax-dump.on` to capture AX tree shapes.
+            // A file, not an env var — GUI launches inherit no shell environment.
+            if chat && crate::core::data_dir().join("ax-dump.on").exists() {
+                crate::capture_mac::dump_ax_tree(
+                    target_pid as i32,
+                    &format!("{app} | {title}"),
+                );
+            }
+
+            let Some(text) =
+                crate::capture_mac::window_text_for_pid(target_pid as i32, chat)
+            else {
                 let mut s = self.shared.lock();
                 s.last_ocr_at = std::time::Instant::now();
                 s.last_ocr_focus_key = focus_key;
@@ -538,7 +552,7 @@ impl CaptureEngine {
             if skip || text.trim().len() < 8 {
                 return;
             }
-            let clipped: String = text.chars().take(8_000).collect();
+            let clipped = clip_capture_text(&text, chat);
             self.append_obs(json!({
                 "ts": Utc::now().to_rfc3339(),
                 "source": "ocr",
@@ -908,6 +922,24 @@ fn platform_accessibility_trusted() -> bool {
     #[cfg(not(target_os = "macos"))]
     {
         true
+    }
+}
+
+const CAPTURE_TEXT_LIMIT: usize = 8_000;
+
+/// Clip a capture to the size the spool carries.
+///
+/// A chat thread runs oldest-first, so taking the head of a long conversation
+/// keeps months of scrollback and drops the messages the user is looking at.
+fn clip_capture_text(text: &str, chat: bool) -> String {
+    let n = text.chars().count();
+    if n <= CAPTURE_TEXT_LIMIT {
+        return text.to_string();
+    }
+    if chat {
+        text.chars().skip(n - CAPTURE_TEXT_LIMIT).collect()
+    } else {
+        text.chars().take(CAPTURE_TEXT_LIMIT).collect()
     }
 }
 

@@ -10,6 +10,22 @@ describe("loop detector eval harness", () => {
     expect(report.overall.f1).toBeGreaterThanOrEqual(0.45);
   });
 
+  it("scores the real macOS Telegram Web captures correctly", async () => {
+    // chat-011 is the sidebar alone, chat-012/013 hold the open thread. These
+    // are the captures that produced "Follow up with Telegram Web - Google
+    // Chrome - Karan" and a due date read off a message's own send time.
+    const fixtures = await loadFixtures();
+    const rows = evaluateFixtures(fixtures).rows.filter((r) =>
+      ["chat-011", "chat-012", "chat-013"].includes(r.id),
+    );
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(row, `${row.id}: ${row.title ?? "(no title)"}`).toMatchObject({
+        ok: true,
+      });
+    }
+  });
+
   it("treats WhatsApp OCR with a real ask as a follow-up", () => {
     const hit = scoreFixture({
       id: "t",

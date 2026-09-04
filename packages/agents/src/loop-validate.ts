@@ -1,7 +1,8 @@
 /**
  * Deterministic validation + one LLM repair pass for extracted open loops.
  */
-import { parseDueAt, parseDueHint } from "./due.js";
+import { isSelfName } from "@second-brain/core";
+import { parseDueAt, parseDueHint, startOfLocalDay } from "./due.js";
 import { parseJsonFromText, runLlm } from "./llm.js";
 import type { LoopCategory } from "./categories.js";
 
@@ -36,6 +37,10 @@ export type ExtractedLoopFields = {
   notTaskReason?: string | null;
   audience?: "me" | "other" | "neither";
   topic?: "actionable" | "idle" | "market";
+  /** Who wrote the source line. Set from the capture, not from the model. */
+  direction?: "from_me" | "from_them" | "unknown";
+  /** Lowercased names belonging to the user. */
+  selfNames?: string[];
 };
 
 export type ValidateResult = {
@@ -82,6 +87,10 @@ function hasProperNounOrEntity(
   return false;
 }
 
+/** Browser, app and tab chrome that a window title can smuggle into a title. */
+export const CHROME_IN_TITLE_RE =
+  /\b(google chrome|chromium|microsoft edge|mozilla firefox|telegram web|whatsapp web|new chats|memory usage)\b/i;
+
 function isOcrGarbageTitle(title: string): boolean {
   const q = (title.match(/["']/g) ?? []).length;
   if (q >= 2) return true;
@@ -114,43 +123,95 @@ function quoteInSource(quote: string, source: string): boolean {
   return head.length >= 8 && s.includes(head);
 }
 
-function sanitizeWho(who?: string | null): string | undefined {
+function sanitizeWho(
+  who?: string | null,
+  selfNames: string[] = [],
+): string | undefined {
   const s = normalizeWhitespace(who ?? "");
   if (s.length < 2 || s.length > 60) return undefined;
   // Role/thread strings belong in the title, not who
   if (/\b(senior|junior|engineer|bengaluru|bangalore|role|position|hiring)\b/i.test(s) && s.includes("/")) {
     return undefined;
   }
-  if (/^(you|me|them|chat|this chat|header|whatsapp|telegram)$/i.test(s)) {
+  if (
+    /^(you|me|them|chat|this chat|header|whatsapp|telegram|whatsapp web|telegram web|new chats|google chrome|chrome|microsoft edge|firefox|safari)$/i.test(
+      s,
+    )
+  ) {
     return undefined;
   }
+  // The Chrome profile name in a window title is the user, not the contact.
+  if (isSelfName(s, selfNames)) return undefined;
   return s;
+}
+
+/**
+ * A chat capture prints each message's own send time beside it
+ * ("4 September 2026, 21:54:39"). Copied into `due`, that reads as a deadline
+ * of the moment the message was sent.
+ */
+function isSendTimestamp(iso: string, sourceText?: string): boolean {
+  if (!sourceText) return false;
+  const d = new Date(Date.parse(iso));
+  if (Number.isNaN(d.getTime())) return false;
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  if (hh === "12" && mm === "00" && ss === "00") return false; // our own local noon
+  return sourceText.includes(`${hh}:${mm}:${ss}`) || sourceText.includes(`${hh}:${mm}`);
 }
 
 function normalizeDue(
   due?: string | null,
   dueHint?: string | null,
   title?: string,
+  now: Date = new Date(),
+  sourceText?: string,
 ): { dueAt: string | null; dueHint: string | null } {
+  /**
+   * Models misread day-first dates: told "tomorrow is 5/9/2026" they answer
+   * 2026-05-09, which lands in the past and renders as "Overdue by 118 days".
+   * When the text says tomorrow/today but the model's date is already behind
+   * us, trust the relative word over the model's arithmetic. The title is not
+   * enough — the model is told to write dates into it, so the relative word
+   * usually survives only in the source.
+   */
+  const relativeRescue = (iso: string): string | null => {
+    if (Date.parse(iso) >= startOfLocalDay(now).getTime()) return iso;
+    return (
+      (title ? parseDueAt(title, now, { relativeOnly: true }) : null) ??
+      (sourceText ? parseDueAt(sourceText, now, { relativeOnly: true }) : null) ??
+      (title ? parseDueHint(title, now) : null) ??
+      iso
+    );
+  };
+  const accept = (iso: string): { dueAt: string | null; dueHint: null } => {
+    if (isSendTimestamp(iso, sourceText)) return { dueAt: null, dueHint: null };
+    return { dueAt: relativeRescue(iso), dueHint: null };
+  };
+
   const candidates = [due, dueHint].filter(Boolean) as string[];
   for (const c of candidates) {
     const trimmed = c.trim();
     if (!trimmed || /^(soon|asap|later|sometime|tbd|n\/?a)$/i.test(trimmed)) {
       continue;
     }
-    // Already ISO
+    // Already ISO. A bare date is local noon, matching every other writer here —
+    // `new Date("2026-09-05")` is UTC midnight and renders a day early west of UTC.
     if (/^\d{4}-\d{2}-\d{2}/.test(trimmed) && !Number.isNaN(Date.parse(trimmed))) {
-      const iso = new Date(trimmed).toISOString();
-      return { dueAt: iso, dueHint: null };
+      const stamped = /^\d{4}-\d{2}-\d{2}$/.test(trimmed)
+        ? `${trimmed}T12:00:00`
+        : trimmed;
+      return accept(new Date(Date.parse(stamped)).toISOString());
     }
-    const fromHint = parseDueHint(trimmed);
-    if (fromHint) return { dueAt: fromHint, dueHint: null };
-    const fromText = parseDueAt(trimmed);
-    if (fromText) return { dueAt: fromText, dueHint: null };
+    const fromHint = parseDueHint(trimmed, now);
+    if (fromHint) return accept(fromHint);
+    const fromText = parseDueAt(trimmed, now);
+    if (fromText) return accept(fromText);
   }
   if (title) {
-    const fromTitle = parseDueAt(title);
-    if (fromTitle) return { dueAt: fromTitle, dueHint: null };
+    const fromTitle = parseDueAt(title, now);
+    if (fromTitle) return accept(fromTitle);
   }
   return { dueAt: null, dueHint: null };
 }
@@ -163,10 +224,18 @@ export function validateExtractedLoop(
   sourceText: string,
 ): ValidateResult {
   const errors: string[] = [];
+  const selfNames = fields.selfNames ?? [];
   const title = normalizeWhitespace(fields.title ?? "");
-  const who = sanitizeWho(fields.who);
-  const org = sanitizeWho(fields.org) ?? (fields.org?.trim() || undefined);
-  const { dueAt, dueHint } = normalizeDue(fields.due, fields.dueHint, title);
+  const who = sanitizeWho(fields.who, selfNames);
+  const org =
+    sanitizeWho(fields.org, selfNames) ?? (fields.org?.trim() || undefined);
+  const { dueAt, dueHint } = normalizeDue(
+    fields.due,
+    fields.dueHint,
+    title,
+    new Date(),
+    sourceText,
+  );
 
   const next: ExtractedLoopFields = {
     ...fields,
@@ -204,6 +273,21 @@ export function validateExtractedLoop(
       "title must include a capitalised person/company name (or who/org)",
     );
   }
+  if (fields.direction === "from_me" && /^follow up with /i.test(title)) {
+    errors.push(
+      'the user wrote this line, so they owe it — title must be an imperative ("Send <person> the ..."), not "Follow up with <person>"',
+    );
+  }
+  if (CHROME_IN_TITLE_RE.test(title)) {
+    errors.push(
+      "title names a browser, app or tab instead of a person — use the contact from the thread",
+    );
+  }
+  if (fields.who && isSelfName(fields.who, selfNames)) {
+    errors.push(
+      `"${fields.who}" is the user, not the other party — who must be the contact or null`,
+    );
+  }
   if (fields.evidenceQuote) {
     if (!quoteInSource(fields.evidenceQuote, sourceText)) {
       errors.push("evidence_quote not found in source text");
@@ -229,6 +313,7 @@ export function isWeakLoopTitle(
   if (t.split(/\s+/).length < 4) return true;
   if (isBannedGeneric(t)) return true;
   if (isOcrGarbageTitle(t)) return true;
+  if (CHROME_IN_TITLE_RE.test(t)) return true;
   if (!hasProperNounOrEntity(t, who, org)) return true;
   return false;
 }
@@ -284,13 +369,22 @@ ${JSON.stringify({
 Source (verbatim):
 ${sourceText.slice(0, 2500)}
 
+direction: ${fields.direction ?? "unknown"}
+
 Rules:
 - title MUST name the person or company AND the concrete topic (4+ words).
   Good: "Follow up with Rivet hiring on the Senior Engineer role"
   Bad: "Check application status"
-- who = person name only (not a job title string).
+- direction=from_me — the USER wrote the line, so the USER owes it. Write an
+  imperative naming the other person ("Send Wini the revenue deck").
+  NEVER "Follow up with <person>".
+- direction=from_them — they owe it: "Follow up with <person> on <what they owe>".
+- direction=unknown — do not guess. Write a neutral imperative or keep=false.
+- who = the other party's name only (not a job title string). It is NEVER the
+  user, and never a browser, app or tab name ("Google Chrome", "Telegram Web").
 - org = company if known.
-- due = absolute ISO date (YYYY-MM-DD) or null. Never "soon".
+- due = absolute ISO date (YYYY-MM-DD) or null. Never "soon". A message's own
+  send time ("4 September 2026, 21:54:39", "09:54 PM") is not a deadline.
 - evidence_quote = short verbatim substring from Source.
 - If this is not a real task (market chatter, spam, courtesy close-out), keep=false.
 
@@ -333,6 +427,12 @@ Return JSON only.`;
     tags: parsed.tags,
     confidence: parsed.confidence,
     notTaskReason: parsed.not_task_reason,
+    // Direction and self names come from the capture, not the model — carry
+    // them through so the second validation applies the same rules.
+    direction: fields.direction,
+    selfNames: fields.selfNames,
+    audience: fields.audience,
+    topic: fields.topic,
   };
 }
 

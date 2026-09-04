@@ -52,14 +52,18 @@ export function parseDueAt(
       if (!Number.isNaN(parsed)) return new Date(parsed).toISOString();
     }
 
-    const us = t.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})\b/);
-    if (us) {
-      const a = Number(us[1]);
-      const b = Number(us[2]);
-      const y = Number(us[3]);
-      // Prefer MDY when first > 12 is impossible; else assume MDY
-      const month = a > 12 ? b : a;
-      const day = a > 12 ? a : b;
+    // Day-first: 5/9/2026 is 5 September. This matches parseDueHint below (the
+    // format the extractor is told to emit) and the chat clients this reads
+    // from. Reading it month-first turned a "tomorrow" promise into a date 118
+    // days in the past, which surfaced as "Overdue by 118 days".
+    const dmy = t.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](20\d{2})\b/);
+    if (dmy) {
+      const a = Number(dmy[1]);
+      const b = Number(dmy[2]);
+      const y = Number(dmy[3]);
+      // A second field over 12 cannot be a month, so that one is month-first.
+      const day = b > 12 ? b : a;
+      const month = b > 12 ? a : b;
       if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
         const d = new Date(y, month - 1, day, 12, 0, 0, 0);
         if (!Number.isNaN(d.getTime())) return d.toISOString();
@@ -118,7 +122,7 @@ export type FormattedDue = {
   daysUntil: number;
 };
 
-function startOfLocalDay(d: Date): Date {
+export function startOfLocalDay(d: Date): Date {
   const out = new Date(d);
   out.setHours(0, 0, 0, 0);
   return out;
