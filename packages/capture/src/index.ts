@@ -21,6 +21,8 @@ import {
   newId,
   log,
   isSpam,
+  segmentChatCapture,
+  type ChatSegment,
 } from "@second-brain/core";
 import { eq, and, lt } from "drizzle-orm";
 
@@ -472,10 +474,33 @@ export async function ingestSpool(): Promise<CaptureResult> {
           continue;
         }
       }
+      // macOS reads a chat window through the Accessibility tree, which returns
+      // the sidebar conversation list first and the open thread second. Storing
+      // the head of that blob kept fifteen other people's previews and threw the
+      // actual conversation away, so loops were mined from the sidebar. Segment
+      // before anything downstream — including the 2500-char store — sees it.
+      const segment: ChatSegment | null =
+        chat && obs.source === "ocr"
+          ? segmentChatCapture(text, {
+              app: obs.app,
+              exe: obs.exe,
+              windowTitle: obs.window_title,
+              url: obs.url,
+            })
+          : null;
+      // Re-emit the contact as a HEADER: line, the same shape Windows OCR uses.
+      const chatText = segment
+        ? segment.view === "thread"
+          ? [segment.header ? `HEADER: ${segment.header}` : "", segment.thread]
+              .filter(Boolean)
+              .join("\n")
+          : (segment.thread ?? "")
+        : text;
+
       if (
         isSpam({
           title: obs.window_title,
-          body: chat ? text.slice(0, 400) : text,
+          body: chat ? chatText.slice(0, 400) : text,
           url: obs.url,
           kind: chat ? "chat" : obs.source,
         })
@@ -489,7 +514,7 @@ export async function ingestSpool(): Promise<CaptureResult> {
         obs.exe ?? "",
         obs.window_title ?? "",
         obs.url ?? "",
-        text.slice(0, 200),
+        (segment ? chatText : text).slice(0, 200),
       ]);
       if (seenHashes.has(hash)) continue;
       seenHashes.add(hash);
@@ -503,9 +528,18 @@ export async function ingestSpool(): Promise<CaptureResult> {
         }
       }
 
-      const storeText = chat
-        ? (obs.source === "ocr" ? text.slice(0, 2500) : obs.window_title) || null
-        : text || null;
+      let storeText: string | null;
+      if (!chat) {
+        storeText = text || null;
+      } else if (obs.source !== "ocr") {
+        storeText = obs.window_title || null;
+      } else if (segment?.view === "list") {
+        // The conversation list is fifteen other people's chats. Keep the row so
+        // the timeline still shows the app, keep none of the text.
+        storeText = null;
+      } else {
+        storeText = chatText.slice(0, 2500) || null;
+      }
 
       const id = newId();
       db.insert(observations)
@@ -526,6 +560,9 @@ export async function ingestSpool(): Promise<CaptureResult> {
           metaJson: JSON.stringify({
             ...(obs.meta ?? {}),
             ...(chat ? { chat: true } : {}),
+            ...(segment
+              ? { chatView: segment.view, chatHeader: segment.header }
+              : {}),
           }),
         })
         .run();

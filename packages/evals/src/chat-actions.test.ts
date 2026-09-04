@@ -22,15 +22,40 @@ describe("chat window titles", () => {
     expect(hit?.app).toBe("Telegram");
   });
 
-  it("parses WhatsApp Web from URL + peer title", () => {
+  it("takes the WhatsApp Web peer from the thread, not the tab title", () => {
+    // A web client titles its tab with the site; the contact is only on screen.
     const hit = parseChatPeer(
-      "Priya",
+      "(2) WhatsApp",
       "Google Chrome",
       "chrome.exe",
       "https://web.whatsapp.com/",
+      "HEADER: Priya\nplease send the invoice by tomorrow",
     );
     expect(hit?.peer).toBe("Priya");
     expect(hit?.app).toBe("WhatsApp");
+  });
+
+  it("never reads a browser or profile name as the contact", () => {
+    // Chrome titles a profile window "<page> - Google Chrome - <profile>", and
+    // that profile name is the user.
+    const hit = parseChatPeer(
+      "Telegram Web - Google Chrome – Karan",
+      "Google Chrome",
+      "com.google.Chrome",
+      null,
+      "Telegram Web - Google Chrome – Karan\nTelegram Web\nSearch",
+    );
+    expect(hit).toBeNull();
+
+    const scored = scoreChatAction({
+      app: "Google Chrome",
+      exe: "com.google.Chrome",
+      windowTitle: "Telegram Web - Google Chrome – Karan",
+      text: "Telegram Web - Google Chrome – Karan\nTelegram Web\nSearch\nI need to complete Trench changes by tomorrow",
+    });
+    expect(scored?.actionTitle ?? "").not.toContain("Google Chrome");
+    expect(scored?.actionTitle ?? "").not.toContain("Karan");
+    expect(scored?.peer).toBeUndefined();
   });
 
   it("drops generic chrome titles without OCR", () => {

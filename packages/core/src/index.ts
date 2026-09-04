@@ -39,6 +39,15 @@ export { seed } from "./db/seed.js";
 export { runJob, withBackoff, newId, type JobResult } from "./jobs.js";
 export { exportCaptureRulesFile } from "./capture-rules-export.js";
 export {
+  segmentChatCapture,
+  selfNamesFromSurface,
+  isSelfName,
+  isBrowserSurface,
+  type ChatSegment,
+  type ChatSurface,
+  type ChatView,
+} from "./chat-thread.js";
+export {
   classifySpam,
   isSpam,
   isSpamText,

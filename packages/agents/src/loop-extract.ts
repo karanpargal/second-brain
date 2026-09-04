@@ -73,20 +73,29 @@ function sourceBlob(c: LoopCandidate): string {
   return (c.snippet || c.description || c.title || "").slice(0, 2500);
 }
 
+/** `Boolean(undefined)` used to read as "they said it" and manufacture chases. */
+function direction(c: LoopCandidate): "from_me" | "from_them" | "unknown" {
+  if (c.fromMe === true) return "from_me";
+  if (c.fromMe === false) return "from_them";
+  return "unknown";
+}
+
 function buildExtractPrompt(c: LoopCandidate, now: Date): string {
-  const { todayDmy, tomorrowDmy, weekday } = chatDateContext(now);
+  const { todayDmy, tomorrowDmy, todayIso, tomorrowIso, weekday } =
+    chatDateContext(now);
   const userRules = formatUserRulesForPrompt(40);
   const evalHints = evalFewShotForPrompt();
   const blob = sourceBlob(c);
   const isChat = c.source === "chat";
 
   return `LOOP_EXTRACT
-Today is ${weekday} ${todayDmy}. Tomorrow is ${tomorrowDmy}.
+Today is ${weekday} ${todayDmy} (ISO ${todayIso}). Tomorrow is ${tomorrowDmy} (ISO ${tomorrowIso}).
+Dates written d/m/y are DAY first: ${tomorrowDmy} is ${tomorrowIso}, not month ${tomorrowDmy.split("/")[1]}.
 You extract ONE open loop — an unfinished commitment the user should ACT on.
 Never send. Local only. Return JSON only.
 
 Source type: ${isChat ? "chat_ocr" : "mail_or_item"}
-from_me: ${Boolean(c.fromMe)}
+direction: ${direction(c)}
 seed_title: ${JSON.stringify(c.title)}
 category_hint: ${c.category ?? "other"}
 kind_hint: ${c.kind}
@@ -108,6 +117,8 @@ Output fields:
 - org: company/org if known
 - subject: role, thread topic, or product name if relevant
 - due: absolute ISO date YYYY-MM-DD (or with time) OR null. Never "soon" / "asap".
+  Copy the ISO values above for today/tomorrow rather than converting d/m/y yourself.
+  "tomorrow" => ${tomorrowIso}. "today" / "by EOD" => ${todayIso}.
 - evidence_quote: short verbatim substring copied from SOURCE TEXT that proves the task
 - kind, category, tags, confidence (0-1)
 - not_task_reason: why keep=false (if so)
@@ -128,9 +139,35 @@ Hard drops (keep=false):
 - OCR garbage without a clear ask
 - Anything matching USER_RULES
 
-from_me:true is NEVER category "reply". Use follow_up (waiting on them) or keep=false.
+DIRECTION decides the verb, the kind, and who owes the action:
+- direction=from_me — the USER wrote the quoted line, so the USER owes it.
+  kind "promise", category follow_up. title = an imperative the user can act on,
+  naming the other person: "Send Wini the revenue deck",
+  "Launch second brain and update Wini".
+  NEVER write "Follow up with <person>" for a line the user wrote.
+- direction=from_them — the other person wrote it.
+  Their commitment to the user -> kind "awaiting_reply", category follow_up,
+    title "Follow up with <person> on <what they owe>".
+  A request aimed at the user  -> kind "unfinished", category reply,
+    title "Reply to <person> about <topic>".
+- direction=unknown — the screen text does not say who wrote it. Do NOT guess
+  "Follow up with <person>". Either write a neutral imperative that is correct
+  either way ("Confirm the hackathon update with Wini") with confidence <= 0.6,
+  or keep=false. A first-person line ("I will ...") is NOT evidence of direction:
+  the other person's messages read "I will ..." too.
+
+<person> is the other party in the thread and is NEVER the user. A browser window
+title ends with the browser name and the user's own profile name
+("... - Google Chrome - Karan"): that trailing name is the USER. Never put it in
+"who" or name it in the title, and never use an app or site name
+("Telegram Web", "WhatsApp Web", "Google Chrome") as a person.
+
+DUE is a deadline someone stated ("by tomorrow", "before Friday", "EOD"). It is
+NEVER a message's own send time. Lines like "4 September 2026, 21:54:39" or
+"09:54 PM" are clock stamps printed beside every message — ignore them. If the
+only date-like text is a send time, due = null.
+
 Job applications the user sent → keep:true, category follow_up, tags ["career"], kind awaiting_reply.
-Inbound asks → category reply, title "Reply to <name> about <topic>".
 Billing / Stripe failed payment → category billing, title names the product/vendor.
 
 USER_RULES:
@@ -162,6 +199,8 @@ function mapParsed(
 ): ExtractedLoopFields {
   return {
     keep: parsed.keep !== false,
+    direction: direction(c),
+    selfNames: c.selfNames ?? [],
     title: (parsed.title ?? c.title).trim(),
     who: parsed.who,
     org: parsed.org,
@@ -285,9 +324,14 @@ export async function extractLoop(
   }
 
   const fields = mapParsed(parsed, c);
-  if (c.fromMe) {
+  if (c.fromMe === true) {
     const cat = parseCategory(fields.category);
     if (cat === "reply" || cat === "career") fields.category = "follow_up";
+    // The user wrote it, so it is theirs to do — not something to wait on.
+    if (fields.kind === "awaiting_reply") fields.kind = "promise";
+  }
+  if (c.fromMe === false && fields.kind === "promise") {
+    fields.kind = "awaiting_reply";
   }
   if (c.source === "chat") {
     const forMe =

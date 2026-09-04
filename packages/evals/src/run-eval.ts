@@ -205,6 +205,24 @@ export function evaluateFixtures(fixtures: EvalFixture[]): EvalReport {
     ) {
       titleOk = false;
     }
+    // Window chrome and the user's own name must never reach a card.
+    const title = (scored.title ?? "").toLowerCase();
+    if (
+      scored.predicted &&
+      (f.expectedTitleNotContains ?? []).some((bad) =>
+        title.includes(bad.toLowerCase()),
+      )
+    ) {
+      titleOk = false;
+    }
+    const who = (scored.who ?? "").toLowerCase();
+    if (
+      scored.predicted &&
+      who &&
+      (f.expectedWhoNot ?? []).some((bad) => who === bad.toLowerCase())
+    ) {
+      titleOk = false;
+    }
 
     rows.push({
       id: f.id,

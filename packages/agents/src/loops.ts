@@ -13,6 +13,9 @@ import {
   isBlockedByUserRules,
   linkLearnCard,
   looksLikeMarket,
+  segmentChatCapture,
+  selfNamesFromSurface,
+  isSelfName,
 } from "@second-brain/core";
 import { eq } from "drizzle-orm";
 import { runLlm, parseJsonFromText } from "./llm.js";
@@ -24,7 +27,7 @@ import {
   detectChatApp,
 } from "./chat-actions.js";
 import { getLoopLlmBudget } from "./loop-budget.js";
-import { parseDueAt, parseDueHint } from "./due.js";
+import { parseDueAt, parseDueHint, startOfLocalDay } from "./due.js";
 import { computePriority } from "./priority.js";
 import {
   loopsAreDuplicate,
@@ -39,7 +42,7 @@ import {
   parseCategory,
   type LoopCategory,
 } from "./categories.js";
-import { isWeakLoopTitle } from "./loop-validate.js";
+import { CHROME_IN_TITLE_RE, isWeakLoopTitle } from "./loop-validate.js";
 import { extractLoopCandidates } from "./loop-extract.js";
 
 export type LoopCandidate = {
@@ -66,6 +69,10 @@ export type LoopCandidate = {
   source?: "item" | "ocr" | "chat";
   category?: string;
   tags?: string[];
+  /**
+   * Who wrote the line: true the user, false the other person, undefined
+   * unknown. Screen text often cannot say, and guessing flips who owes the task.
+   */
   fromMe?: boolean;
   /** Raw chat OCR for local LLM polish */
   ocrText?: string;
@@ -77,6 +84,8 @@ export type LoopCandidate = {
   evidenceQuote?: string;
   org?: string;
   subjectTopic?: string;
+  /** Lowercased names belonging to the user — never a valid counterparty. */
+  selfNames?: string[];
 };
 
 const WEEK_MS = 7 * 24 * 3600_000;
@@ -148,6 +157,50 @@ function readGoogleUserEmail(): string | null {
     const raw = row.valueJson.replace(/"/g, "").trim();
     return raw.includes("@") ? raw : null;
   }
+}
+
+/**
+ * Names that mean "the user". The signed-in mail account is the one identity
+ * the app already knows; the browser profile name is added per capture.
+ */
+function userSelfNames(): string[] {
+  const local = readGoogleUserEmail()?.split("@")[0] ?? "";
+  if (!local) return [];
+  return [local, ...local.split(/[._-]+/)]
+    .filter((s) => s.length >= 3)
+    .map((s) => s.toLowerCase());
+}
+
+/**
+ * Every name we know to be the user. The mail account covers the signed-in
+ * identity; recent window titles cover the browser profile name, which is the
+ * only source when no mail account is connected — and the one that put "Karan"
+ * on a card as the person to follow up with.
+ */
+function knownSelfNames(): string[] {
+  const out = new Set(userSelfNames());
+  const seenTitles = new Set<string>();
+  const rows = getDb()
+    .select()
+    .from(observations)
+    .all()
+    .filter((o) => Boolean(o.windowTitle))
+    .sort((a, b) => b.ts.localeCompare(a.ts))
+    .slice(0, 300);
+  for (const o of rows) {
+    const title = o.windowTitle as string;
+    if (seenTitles.has(title)) continue;
+    seenTitles.add(title);
+    for (const n of selfNamesFromSurface({
+      app: o.app,
+      exe: o.exe,
+      windowTitle: title,
+      url: o.url,
+    })) {
+      out.add(n);
+    }
+  }
+  return [...out];
 }
 
 function itemMailMeta(it: { metaJson: string; author: string | null }): {
@@ -300,13 +353,32 @@ export function collectLoopCandidates(
     .slice(0, 40);
 
   const seenChat = new Set<string>();
+  const accountNames = userSelfNames();
   for (const o of chatObs) {
+    // Rows captured before segmentation shipped still hold the sidebar
+    // conversation list. Mining that produces tasks from other people's chats.
+    const segment = segmentChatCapture(o.text ?? "", {
+      app: o.app,
+      exe: o.exe,
+      windowTitle: o.windowTitle,
+      url: o.url,
+      selfNames: accountNames,
+    });
+    if (segment.view === "list") continue;
+    // Same normalisation ingest applies, so already-segmented rows pass through
+    // unchanged and legacy sidebar-heavy rows get cleaned up here.
+    const threadText =
+      segment.view === "thread"
+        ? [segment.header ? `HEADER: ${segment.header}` : "", segment.thread]
+            .filter(Boolean)
+            .join("\n")
+        : (segment.thread ?? o.text);
     const scored = scoreChatAction({
       windowTitle: o.windowTitle,
       app: o.app,
       exe: o.exe,
       url: o.url,
-      text: o.text,
+      text: threadText,
     });
     if (!scored) continue;
     const hit = parseChatPeer(
@@ -314,7 +386,7 @@ export function collectLoopCandidates(
       o.app,
       o.exe,
       o.url,
-      o.text,
+      threadText,
     );
     const peer =
       scored.peer ??
@@ -336,18 +408,26 @@ export function collectLoopCandidates(
     out.push({
       title: scored.actionTitle,
       description: scored.snippet,
-      kind: scored.fromMe ? "promise" : "unfinished",
+      // The user's own promise is theirs to act on; the other person's is
+      // something to chase. Unknown direction stays deliberately neutral.
+      kind:
+        scored.fromMe === true
+          ? "promise"
+          : scored.fromMe === false
+            ? "awaiting_reply"
+            : "unfinished",
       who: peer,
       dueAt: parseDueAt(scored.actionTitle, new Date(), { relativeOnly: true }),
       recallScore: scored.score,
       confidence: scored.score,
       observationId: o.id,
-      snippet: (o.text ?? scored.snippet).slice(0, 2500),
-      ocrText: o.text ?? undefined,
+      snippet: (threadText ?? scored.snippet).slice(0, 2500),
+      ocrText: threadText ?? undefined,
       source: "chat",
       category: "follow_up",
       tags: ["chat", appName.toLowerCase()],
       fromMe: scored.fromMe,
+      selfNames: segment.selfNames,
     });
   }
 
@@ -666,6 +746,51 @@ function recategorizeOpenLoops(): void {
   if (n > 0) log.info("Recategorized open loops", { updated: n });
 }
 
+/**
+ * True when the capture is a conversation list rather than an open thread.
+ * Ingest records the verdict; rows captured before that shipped are re-checked.
+ */
+function isChatListObservation(o: {
+  text: string | null;
+  app: string | null;
+  exe: string | null;
+  windowTitle: string | null;
+  url: string | null;
+  metaJson: string;
+}): boolean {
+  try {
+    const meta = JSON.parse(o.metaJson || "{}") as { chatView?: string };
+    if (meta.chatView) return meta.chatView === "list";
+  } catch {
+    /* fall through to re-segmenting */
+  }
+  if (!o.text || !isChatSurface(o.app, o.exe, o.windowTitle, o.url)) return false;
+  return (
+    segmentChatCapture(o.text, {
+      app: o.app,
+      exe: o.exe,
+      windowTitle: o.windowTitle,
+      url: o.url,
+    }).view === "list"
+  );
+}
+
+/**
+ * A loop detected right now cannot already be overdue. A due date in the past
+ * on a fresh detection means a misparse — a day-first date read month-first, or
+ * a message's own send time — so drop it rather than show "Overdue by 118 days".
+ */
+function clampPastDue(dueAt: string | null | undefined): string | null {
+  if (!dueAt) return null;
+  const ms = Date.parse(dueAt);
+  if (Number.isNaN(ms)) return null;
+  if (ms < startOfLocalDay(new Date()).getTime()) {
+    log.info("Dropped a due date that was already in the past", { dueAt });
+    return null;
+  }
+  return dueAt;
+}
+
 function persistCandidate(
   c: LoopCandidate & { keep?: boolean },
   existingId: string | null,
@@ -695,10 +820,11 @@ function persistCandidate(
           : garbageTitle
             ? title
             : existing?.title ?? title;
-    const nextDue =
-      c.source === "chat"
-        ? (c.dueAt ?? existing?.dueAt ?? null)
-        : (c.dueAt ?? existing?.dueAt ?? null);
+    // Clamp only the incoming date; a loop that has genuinely aged past its
+    // deadline keeps the one it already had.
+    const nextDue = c.dueAt
+      ? clampPastDue(c.dueAt)
+      : (existing?.dueAt ?? null);
     db.update(openLoops)
       .set({
         lastSeenAt: now,
@@ -742,11 +868,15 @@ function persistCandidate(
     return "updated";
   }
 
-  const dueAt =
+  // A chat snippet is a transcript: every date in it is a bubble clock stamp or
+  // somebody else's deadline, so only relative words in the title count.
+  const isChat = c.source === "chat";
+  const dueAt = clampPastDue(
     c.dueAt ??
-    (c.dueHint ? parseDueHint(c.dueHint) : null) ??
-    parseDueAt(c.title) ??
-    parseDueAt(c.snippet);
+      (c.dueHint ? parseDueHint(c.dueHint) : null) ??
+      parseDueAt(c.title, new Date(), { relativeOnly: isChat }) ??
+      (isChat ? null : parseDueAt(c.snippet)),
+  );
   const priority = computePriority({
     dueAt,
     kind: c.kind,
@@ -840,7 +970,7 @@ export async function detectOpenLoops(
       } catch {
         /* */
       }
-      if (tags.some((t) => t.toLowerCase() === "chat")) continue;
+      const isChatLoop = tags.some((t) => t.toLowerCase() === "chat");
       const userHit = isBlockedByUserRules(input);
       if (userHit) {
         db.update(openLoops)
@@ -858,6 +988,10 @@ export async function detectOpenLoops(
         spamClosed++;
         continue;
       }
+      // User rules ("not tracking", "spam") now reach chat cards too — before
+      // this, nothing in the app could ever re-judge one. The generic spam
+      // classifier stays off them: it is tuned for mail and trips on threads.
+      if (isChatLoop) continue;
       const verdict = classifySpam(input);
       if (verdict.spam) {
         db.update(openLoops)
@@ -994,7 +1128,10 @@ export async function autoCloseLoops(): Promise<{ closed: number }> {
     .filter(
       (o) =>
         o.ts >= weekAgo &&
-        !isSelfGeneratedObservation(o),
+        !isSelfGeneratedObservation(o) &&
+        // A sidebar capture is fifteen other conversations; matching a loop
+        // against it closes the right task on the wrong evidence.
+        !isChatListObservation(o),
     )
     .sort((a, b) => b.ts.localeCompare(a.ts))
     .slice(0, 200);
@@ -1385,6 +1522,69 @@ export async function backfillLoopQuality(): Promise<{
     reopened++;
   }
 
+  // Cards built from a window title rather than a conversation: the browser or
+  // app name as the person, or the user's own Chrome profile name as the
+  // counterparty. Nothing else re-judges a chat loop, so clear them here.
+  const accountNames = knownSelfNames();
+  const misattributed = db
+    .select()
+    .from(openLoops)
+    .all()
+    .filter((l) => {
+      if (l.status !== "open") return false;
+      if (CHROME_IN_TITLE_RE.test(l.title)) return true;
+      return Boolean(l.who) && isSelfName(l.who as string, accountNames);
+    });
+  for (const loop of misattributed) {
+    db.update(openLoops)
+      .set({
+        status: "dismissed",
+        closedAt: now,
+        closeReason: "repair:self_or_chrome",
+        updatedAt: now,
+      })
+      .where(eq(openLoops.id, loop.id))
+      .run();
+    reextracted++;
+  }
+  if (misattributed.length > 0) {
+    log.info("Dismissed loops built from window chrome", {
+      count: misattributed.length,
+    });
+  }
+
+  // A deadline that predates the moment the loop was detected never happened —
+  // it is a misread date (day-first read month-first) or a message's own send
+  // time. Those are the rows showing "Overdue by 118 days".
+  let dueRepaired = 0;
+  for (const loop of db
+    .select()
+    .from(openLoops)
+    .all()
+    .filter((l) => l.status === "open" && l.dueAt)) {
+    const due = Date.parse(loop.dueAt as string);
+    const detected = Date.parse(loop.detectedAt);
+    if (Number.isNaN(due) || Number.isNaN(detected)) continue;
+    if (due >= detected - 86_400_000) continue;
+    db.update(openLoops)
+      .set({
+        dueAt: null,
+        dueHint: null,
+        priority: computePriority({
+          dueAt: null,
+          kind: loop.kind,
+          confidence: loop.confidence,
+        }),
+        updatedAt: now,
+      })
+      .where(eq(openLoops.id, loop.id))
+      .run();
+    dueRepaired++;
+  }
+  if (dueRepaired > 0) {
+    log.info("Cleared due dates that predate detection", { count: dueRepaired });
+  }
+
   // Re-extract currently open weak titles through new pipeline
   const weakOpen = db
     .select()
@@ -1430,16 +1630,33 @@ export async function backfillLoopQuality(): Promise<{
     } else if (ev?.observationId) {
       const o = allObs.find((x) => x.id === ev.observationId);
       if (o) {
+        // Rows stored before segmentation shipped still hold the sidebar. Clean
+        // them here too, or the re-extract rebuilds the card it is meant to fix.
+        const segment = segmentChatCapture(o.text ?? "", {
+          app: o.app,
+          exe: o.exe,
+          windowTitle: o.windowTitle,
+          url: o.url,
+          selfNames: accountNames,
+        });
+        if (segment.view === "list") continue;
+        const threadText =
+          segment.view === "thread"
+            ? [segment.header ? `HEADER: ${segment.header}` : "", segment.thread]
+                .filter(Boolean)
+                .join("\n")
+            : (segment.thread ?? o.text ?? "");
         cand = {
           title: loop.title,
-          description: (o.text ?? "").slice(0, 400),
+          description: threadText.slice(0, 400),
           kind: (loop.kind as LoopCandidate["kind"]) || "unfinished",
           who: loop.who ?? undefined,
           recallScore: 0.7,
           confidence: 0.7,
           observationId: o.id,
-          snippet: (o.text ?? "").slice(0, 2500),
-          ocrText: o.text ?? undefined,
+          snippet: threadText.slice(0, 2500),
+          ocrText: threadText || undefined,
+          selfNames: segment.selfNames,
           source: "chat",
           category: loop.category,
           tags: (() => {
@@ -1470,7 +1687,7 @@ export async function backfillLoopQuality(): Promise<{
       }
       continue;
     }
-    const dueAt = extracted.dueAt ?? null;
+    const dueAt = clampPastDue(extracted.dueAt);
     db.update(openLoops)
       .set({
         title: extracted.title,
@@ -1557,7 +1774,7 @@ function readBackfillDone(): boolean {
       .select()
       .from(settings)
       .all()
-      .find((r) => r.key === "loops.aiFirstBackfillDone.v2");
+      .find((r) => r.key === "loops.aiFirstBackfillDone.v3");
     if (!row) return false;
     return JSON.parse(row.valueJson) === true;
   } catch {
@@ -1566,7 +1783,7 @@ function readBackfillDone(): boolean {
 }
 
 function markBackfillDone(): void {
-  writeSetting("loops.aiFirstBackfillDone.v2", true);
+  writeSetting("loops.aiFirstBackfillDone.v3", true);
 }
 
 export async function runLoopsPipeline(): Promise<{

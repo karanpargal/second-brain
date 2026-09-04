@@ -184,21 +184,102 @@ fn repo_root() -> Option<PathBuf> {
     None
 }
 
+/// Node majors the core's native modules load under. better-sqlite3 11.x needs
+/// V8 APIs that Node 26 removed, so a newer Node is worse than useless here:
+/// the daemon starts and then dies on the better_sqlite3.node ABI check.
+const MIN_NODE_MAJOR: u32 = 22;
+const MAX_NODE_MAJOR: u32 = 25;
+
+fn node_major(bin: &Path) -> Option<u32> {
+    let out = Command::new(bin).arg("-v").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .trim_start_matches('v')
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// A Node that exists *and* reports a major version the core can run on.
+fn usable_node(bin: &Path) -> bool {
+    bin.exists()
+        && node_major(bin)
+            .map(|m| (MIN_NODE_MAJOR..=MAX_NODE_MAJOR).contains(&m))
+            .unwrap_or(false)
+}
+
+/// Explicit pin, for machines whose default Node is out of range.
+/// GUI apps do not inherit shell PATH or env, so the data-dir file is the
+/// reliable channel; the env var is there for `npm run` / dev shells.
+fn pinned_node() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("BRAIN_NODE_BIN") {
+        let pb = PathBuf::from(p.trim());
+        if usable_node(&pb) {
+            return Some(pb);
+        }
+    }
+    let raw = fs::read_to_string(data_dir().join("node-path")).ok()?;
+    let pb = PathBuf::from(raw.trim());
+    if usable_node(&pb) {
+        Some(pb)
+    } else {
+        None
+    }
+}
+
+/// Version directories under a version-manager root, newest first.
+/// Sorted numerically, so v9 does not outrank v10 the way a string sort would.
+#[cfg(target_os = "macos")]
+fn newest_first(root: &Path) -> Vec<PathBuf> {
+    let mut versions: Vec<(Vec<u32>, PathBuf)> = match fs::read_dir(root) {
+        Ok(entries) => entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .map(|p| {
+                let parts = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .trim_start_matches('v')
+                    .split('.')
+                    .map(|s| s.parse().unwrap_or(0))
+                    .collect();
+                (parts, p)
+            })
+            .collect(),
+        Err(_) => return Vec::new(),
+    };
+    versions.sort_by(|a, b| b.0.cmp(&a.0));
+    versions.into_iter().map(|(_, p)| p).collect()
+}
+
 fn find_node() -> Option<PathBuf> {
+    if let Some(p) = pinned_node() {
+        return Some(p);
+    }
+
     #[cfg(windows)]
     {
         if let Ok(out) = Command::new("where").arg("node").output() {
             if out.status.success() {
                 let s = String::from_utf8_lossy(&out.stdout);
-                let first = s.lines().next()?.trim();
-                if !first.is_empty() {
-                    return Some(PathBuf::from(first));
+                if let Some(p) = s
+                    .lines()
+                    .map(|l| PathBuf::from(l.trim()))
+                    .find(|p| usable_node(p))
+                {
+                    return Some(p);
                 }
             }
         }
         let pf = std::env::var("ProgramFiles").ok()?;
         let p = PathBuf::from(pf).join("nodejs").join("node.exe");
-        if p.exists() {
+        if usable_node(&p) {
             return Some(p);
         }
         return None;
@@ -207,64 +288,34 @@ fn find_node() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         // GUI apps do not inherit shell PATH — probe known install locations.
+        // Every candidate is version-checked: the newest Node on the machine is
+        // often too new for the core's native modules, so "first that exists"
+        // is the wrong pick. Managed installs are walked newest-first.
         let home = std::env::var("HOME").unwrap_or_default();
-        let candidates = [
-            "/opt/homebrew/bin/node",
-            "/usr/local/bin/node",
-            "/usr/bin/node",
+        let mut candidates: Vec<PathBuf> = vec![
+            PathBuf::from("/opt/homebrew/bin/node"),
+            PathBuf::from("/usr/local/bin/node"),
+            PathBuf::from("/usr/bin/node"),
         ];
-        for c in candidates {
-            let p = PathBuf::from(c);
-            if p.exists() {
-                return Some(p);
-            }
-        }
         if !home.is_empty() {
-            let volta = PathBuf::from(&home).join(".volta").join("bin").join("node");
-            if volta.exists() {
-                return Some(volta);
-            }
-            // Newest nvm install
+            candidates.push(PathBuf::from(&home).join(".volta").join("bin").join("node"));
+
+            // nvm installs, newest first
             let nvm_dir = PathBuf::from(&home).join(".nvm").join("versions").join("node");
-            if let Ok(entries) = fs::read_dir(&nvm_dir) {
-                let mut versions: Vec<PathBuf> = entries
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.is_dir())
-                    .collect();
-                versions.sort();
-                if let Some(latest) = versions.last() {
-                    let node = latest.join("bin").join("node");
-                    if node.exists() {
-                        return Some(node);
-                    }
-                }
-            }
+            candidates.extend(newest_first(&nvm_dir).into_iter().map(|v| v.join("bin").join("node")));
+
             // fnm (default multi-arch layout)
             let fnm_root = PathBuf::from(&home).join(".local").join("share").join("fnm");
-            let fnm_aliases = [
-                fnm_root.join("aliases").join("default").join("bin").join("node"),
-                fnm_root.join("current").join("bin").join("node"),
-            ];
-            for p in fnm_aliases {
-                if p.exists() {
-                    return Some(p);
-                }
-            }
-            if let Ok(entries) = fs::read_dir(fnm_root.join("node-versions")) {
-                let mut versions: Vec<PathBuf> = entries
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.is_dir())
-                    .collect();
-                versions.sort();
-                if let Some(latest) = versions.last() {
-                    let node = latest.join("installation").join("bin").join("node");
-                    if node.exists() {
-                        return Some(node);
-                    }
-                }
-            }
+            candidates.push(fnm_root.join("aliases").join("default").join("bin").join("node"));
+            candidates.push(fnm_root.join("current").join("bin").join("node"));
+            candidates.extend(
+                newest_first(&fnm_root.join("node-versions"))
+                    .into_iter()
+                    .map(|v| v.join("installation").join("bin").join("node")),
+            );
+        }
+        if let Some(p) = candidates.into_iter().find(|p| usable_node(p)) {
+            return Some(p);
         }
         // Last resort: login shell PATH (zsh is default on modern macOS)
         if let Ok(out) = Command::new("zsh")
@@ -276,7 +327,7 @@ fn find_node() -> Option<PathBuf> {
                 let first = s.lines().next().unwrap_or("").trim();
                 if !first.is_empty() {
                     let p = PathBuf::from(first);
-                    if p.exists() {
+                    if usable_node(&p) {
                         return Some(p);
                     }
                 }
@@ -288,7 +339,7 @@ fn find_node() -> Option<PathBuf> {
                 let first = s.lines().next().unwrap_or("").trim();
                 if !first.is_empty() {
                     let p = PathBuf::from(first);
-                    if p.exists() {
+                    if usable_node(&p) {
                         return Some(p);
                     }
                 }
@@ -326,7 +377,13 @@ pub fn ensure_core_running() -> Result<(), String> {
         "Could not find second-brain repo (set BRAIN_REPO_ROOT)".to_string()
     })?;
     let node = find_node().ok_or_else(|| {
-        "Node.js not found — install Node 22+ (Homebrew/nvm) or set PATH".to_string()
+        format!(
+            "No usable Node.js found — need major {}-{} (Homebrew/nvm/volta/fnm). \
+             Pin one by writing its path to {}/node-path or setting BRAIN_NODE_BIN.",
+            MIN_NODE_MAJOR,
+            MAX_NODE_MAJOR,
+            data_dir().display()
+        )
     })?;
     let tsx = root.join("node_modules").join("tsx").join("dist").join("cli.mjs");
     let alt = root.join("node_modules").join("tsx").join("dist").join("cli.js");

@@ -28,15 +28,25 @@ export type ChatPolishLoop = {
 export function chatDateContext(now: Date = new Date()): {
   todayDmy: string;
   tomorrowDmy: string;
+  todayIso: string;
+  tomorrowIso: string;
   weekday: string;
 } {
   const fmt = (d: Date) =>
     `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`;
+  // Local-date ISO — not toISOString(), which shifts to UTC and can report
+  // yesterday for an evening IST timestamp.
+  const iso = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+      d.getDate(),
+    ).padStart(2, "0")}`;
   const tmr = new Date(now);
   tmr.setDate(tmr.getDate() + 1);
   return {
     todayDmy: fmt(now),
     tomorrowDmy: fmt(tmr),
+    todayIso: iso(now),
+    tomorrowIso: iso(tmr),
     weekday: now.toLocaleDateString("en-IN", { weekday: "long" }),
   };
 }

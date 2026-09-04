@@ -141,6 +141,30 @@ export async function runLlm(opts: {
   return isLoop ? enqueueLlm(exec) : exec();
 }
 
+let warnedChatToHosted = false;
+
+/**
+ * Callers pass `skipHosted: true` for prompts built from captured screen
+ * content — chat messages, search history, Improve suggestions. Those stay on
+ * the local model by default, so with no Ollama reachable they fall to the
+ * offline stub and produce nothing.
+ *
+ * BRAIN_ALLOW_CHAT_TO_HOSTED=1 lifts that restriction, which means captured
+ * chat text IS UPLOADED to the configured hosted provider (e.g. OpenAI).
+ * Opt-in only: unset or any other value keeps these prompts local-only.
+ */
+export function chatToHostedAllowed(): boolean {
+  const on = process.env.BRAIN_ALLOW_CHAT_TO_HOSTED === "1";
+  if (on && !warnedChatToHosted) {
+    warnedChatToHosted = true;
+    log.warn(
+      "BRAIN_ALLOW_CHAT_TO_HOSTED=1 — captured chat text will be sent to the hosted LLM",
+      { url: config.hostedLlm.url },
+    );
+  }
+  return on;
+}
+
 async function runLlmInner(opts: {
   prompt: string;
   model?: LlmRole | "haiku" | "sonnet" | "opus" | string;
@@ -155,11 +179,13 @@ async function runLlmInner(opts: {
 }): Promise<LlmCallResult> {
   const preferred = resolveModel(opts.model ?? "fast");
   const baseUrl = config.ollama.baseUrl.replace(/\/$/, "");
+  // Honour skipHosted unless the user explicitly opted into uploading chat text.
+  const skipHosted = opts.skipHosted === true && !chatToHostedAllowed();
   const retries = opts.retries ?? 2;
   const timeoutMs = opts.timeoutMs ?? config.ollama.timeoutMs ?? 180_000;
   const temperature = opts.temperature ?? 0.3;
 
-  if (opts.preferHosted && !opts.skipHosted) {
+  if (opts.preferHosted && !skipHosted) {
     const hostedFirst = await tryHostedLlm(opts);
     if (hostedFirst) return hostedFirst;
   }
@@ -167,7 +193,7 @@ async function runLlmInner(opts: {
   try {
     const healthy = await ollamaHealthy(baseUrl);
     if (!healthy) {
-      if (!opts.skipHosted) {
+      if (!skipHosted) {
         const hosted = await tryHostedLlm(opts);
         if (hosted) return hosted;
       }
@@ -265,7 +291,7 @@ async function runLlmInner(opts: {
 
     throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
   } catch (e) {
-    if (!opts.skipHosted) {
+    if (!skipHosted) {
       const hosted = await tryHostedLlm(opts);
       if (hosted) return hosted;
     }

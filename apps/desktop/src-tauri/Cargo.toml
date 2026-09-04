@@ -22,13 +22,15 @@ directories = "5"
 sha2 = "0.10"
 hex = "0.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
-xcap = "0.0.14"
 thiserror = "2"
 parking_lot = "0.12"
 once_cell = "1"
 
 [target.'cfg(windows)'.dependencies]
+# Screenshot + PNG encode feed the WinRT OCR path only. macOS reads Accessibility
+# text instead, and xcap 0.0.14 does not compile against core-foundation 0.10.
+image = { version = "0.25", default-features = false, features = ["png"] }
+xcap = "0.0.14"
 windows = { version = "0.58", features = [
   "Win32_Foundation",
   "Win32_UI_WindowsAndMessaging",
