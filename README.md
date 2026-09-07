@@ -1,6 +1,6 @@
 # Second Brain
 
-Local-first ambient memory for **Windows and macOS**. The desktop app captures what you work on (windows, browser history, on-screen text), finds **open loops**, and keeps context searchable — mostly on-device via [Ollama](https://ollama.com/). Optional Gmail / Calendar / GitHub are **read-only**. Optional cloud models apply only to **Ask**, if you turn them on.
+Local-first ambient memory for **Windows, macOS, and Linux**. The desktop app captures what you work on (windows, browser history, on-screen text), finds **open loops**, and keeps context searchable — mostly on-device via [Ollama](https://ollama.com/). Optional Gmail / Calendar / GitHub are **read-only**. Optional cloud models apply only to **Ask**, if you turn them on.
 
 **Propose-only** — nothing is sent or modified in external accounts unless you explicitly connect that provider. Detected loops wait for you (or auto-close when evidence says they’re done).
 
@@ -30,6 +30,16 @@ npm run package:app    # build Second Brain.app / .dmg
 
 Grant **Accessibility** when prompted (System Settings → Privacy & Security → Accessibility). Capture uses the Accessibility tree for on-screen text — no screenshots. See [scripts/macos-signing.md](scripts/macos-signing.md) for signing / Gatekeeper notes.
 
+### Linux
+
+```bash
+npm install
+npm run package:app    # .deb / .AppImage under apps/desktop/src-tauri/target/release/bundle/
+npm run shortcut:linux # app-menu entry → that bundle (--autostart for login)
+```
+
+Needs webkit2gtk + build tools (see [Getting started](GETTING_STARTED.md)); NixOS via `nix develop`. Capture is window titles + browser history + AT-SPI on-screen text (Hyprland/Sway/X11).
+
 The app starts local core, the floating widget, and capture by itself.
 
 Full walkthrough (Ollama, Google, voice, cloud Ask): **[GETTING_STARTED.md](GETTING_STARTED.md)**.
@@ -52,6 +62,7 @@ Full walkthrough (Ollama, Google, voice, cloud Ask): **[GETTING_STARTED.md](GETT
 
 - Windows: `%LOCALAPPDATA%\second-brain\`
 - macOS: `~/Library/Application Support/second-brain/`
+- Linux: `~/.local/share/second-brain/`
 
 ## Developer terminals
 

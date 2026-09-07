@@ -233,7 +233,7 @@ fn pinned_node() -> Option<PathBuf> {
 
 /// Version directories under a version-manager root, newest first.
 /// Sorted numerically, so v9 does not outrank v10 the way a string sort would.
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn newest_first(root: &Path) -> Vec<PathBuf> {
     let mut versions: Vec<(Vec<u32>, PathBuf)> = match fs::read_dir(root) {
         Ok(entries) => entries
@@ -350,17 +350,86 @@ fn find_node() -> Option<PathBuf> {
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
+        // GUI launches do not inherit shell PATH — probe managed installs
+        // first, every candidate version-checked like on macOS.
+        let home = std::env::var("HOME").unwrap_or_default();
+        let mut candidates: Vec<PathBuf> = vec![
+            PathBuf::from("/run/current-system/sw/bin/node"),
+            PathBuf::from("/usr/local/bin/node"),
+            PathBuf::from("/usr/bin/node"),
+        ];
+        if !home.is_empty() {
+            let h = PathBuf::from(&home);
+            candidates.push(h.join(".nix-profile").join("bin").join("node"));
+            candidates.push(h.join(".volta").join("bin").join("node"));
+            candidates.push(h.join(".local").join("share").join("mise").join("shims").join("node"));
+
+            let nvm_dir = h.join(".nvm").join("versions").join("node");
+            candidates.extend(newest_first(&nvm_dir).into_iter().map(|v| v.join("bin").join("node")));
+
+            let fnm_root = h.join(".local").join("share").join("fnm");
+            candidates.push(fnm_root.join("aliases").join("default").join("bin").join("node"));
+            candidates.push(fnm_root.join("current").join("bin").join("node"));
+            candidates.extend(
+                newest_first(&fnm_root.join("node-versions"))
+                    .into_iter()
+                    .map(|v| v.join("installation").join("bin").join("node")),
+            );
+        }
+        if let Some(p) = candidates.into_iter().find(|p| usable_node(p)) {
+            return Some(p);
+        }
+        // Last resort: login-shell PATH (covers nix profile, asdf, mise
+        // activate, and anything else the login shell sets up). Login but
+        // NOT interactive: -i would run rc files that can prompt or hang
+        // a GUI launch with no terminal attached.
+        if let Ok(out) = Command::new("bash")
+            .args(["-lc", "command -v node"])
+            .output()
+        {
+            if out.status.success() {
+                let s = String::from_utf8_lossy(&out.stdout);
+                let first = s.lines().next().unwrap_or("").trim();
+                if !first.is_empty() {
+                    let p = PathBuf::from(first);
+                    if usable_node(&p) {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+        // PATH lookup, still version-checked: a too-new system Node is
+        // worse than none (native modules fail to load, see MIN/MAX above).
         if let Ok(out) = Command::new("which").arg("node").output() {
             if out.status.success() {
                 let s = String::from_utf8_lossy(&out.stdout);
-                let first = s.lines().next()?.trim();
-                if !first.is_empty() {
-                    return Some(PathBuf::from(first));
+                if let Some(first) = s.lines().next().map(|l| l.trim()) {
+                    if !first.is_empty() {
+                        let p = PathBuf::from(first);
+                        if usable_node(&p) {
+                            return Some(p);
+                        }
+                    }
                 }
             }
         }
         None
     }
+}
+
+#[cfg(windows)]
+fn node_install_hint() -> &'static str {
+    "Node.js 22-25 (nvm-windows, volta, or nodejs.org)"
+}
+
+#[cfg(target_os = "macos")]
+fn node_install_hint() -> &'static str {
+    "Node.js 22-25 (Homebrew, nvm, volta, or fnm)"
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn node_install_hint() -> &'static str {
+    "Node.js 22-25 (distro package, nvm, fnm, volta, mise, or nixpkgs nodejs_22)"
 }
 
 pub fn ensure_core_running() -> Result<(), String> {
@@ -378,10 +447,11 @@ pub fn ensure_core_running() -> Result<(), String> {
     })?;
     let node = find_node().ok_or_else(|| {
         format!(
-            "No usable Node.js found — need major {}-{} (Homebrew/nvm/volta/fnm). \
+            "No usable Node.js found — need major {}-{} ({}). \
              Pin one by writing its path to {}/node-path or setting BRAIN_NODE_BIN.",
             MIN_NODE_MAJOR,
             MAX_NODE_MAJOR,
+            node_install_hint(),
             data_dir().display()
         )
     })?;

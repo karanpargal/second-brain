@@ -6,7 +6,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -21,9 +21,9 @@ pub struct CaptureStatus {
     pub paused_until: Option<String>,
     pub last_obs: Option<String>,
     pub spool_dir: String,
-    /// macOS: Accessibility (AX) permission granted. Always true on Windows.
+    /// macOS: Accessibility (AX) permission granted. Always true elsewhere.
     pub accessibility_trusted: bool,
-    /// Platform capture method: "ocr" (Windows) or "ax" (macOS).
+    /// Platform capture method: "ocr" (Windows) or "ax" (macOS/Linux).
     pub capture_method: String,
 }
 
@@ -43,7 +43,7 @@ struct Shared {
     last_user_app: String,
     last_user_pid: u32,
     last_wake_at: std::time::Instant,
-    browser_cursor: i64,
+    browser_cursors: HashMap<String, i64>,
     block_exes: HashSet<String>,
     block_domains: HashSet<String>,
 }
@@ -53,6 +53,8 @@ pub struct CaptureEngine {
     shared: Arc<Mutex<Shared>>,
     data_dir: PathBuf,
     spool_dir: PathBuf,
+    #[cfg(target_os = "linux")]
+    ax: parking_lot::Mutex<Option<crate::capture_ax::AxReader>>,
 }
 
 impl CaptureEngine {
@@ -78,6 +80,9 @@ impl CaptureEngine {
             "1password",
             "bitwarden",
             "keepassxc",
+            // Linux secret UIs
+            "seahorse",
+            "kwalletmanager",
         ] {
             block_exes.insert(e.to_string());
         }
@@ -93,6 +98,8 @@ impl CaptureEngine {
             block_domains.insert(d.to_string());
         }
         load_control_into(&data_dir, &mut block_exes, &mut block_domains);
+        #[cfg(target_os = "linux")]
+        crate::capture_linux::bootstrap();
 
         Self {
             running: AtomicBool::new(false),
@@ -111,12 +118,14 @@ impl CaptureEngine {
                 last_user_app: String::new(),
                 last_user_pid: 0,
                 last_wake_at: std::time::Instant::now() - Duration::from_secs(60),
-                browser_cursor: 0,
+                browser_cursors: HashMap::new(),
                 block_exes,
                 block_domains,
             })),
             data_dir,
             spool_dir,
+            #[cfg(target_os = "linux")]
+            ax: parking_lot::Mutex::new(None),
         }
     }
 
@@ -158,7 +167,8 @@ impl CaptureEngine {
             last_obs: s.last_obs.clone(),
             spool_dir: self.spool_dir.display().to_string(),
             accessibility_trusted: platform_accessibility_trusted(),
-            capture_method: if cfg!(target_os = "macos") {
+            // macOS reads the Accessibility tree, Linux the AT-SPI tree.
+            capture_method: if cfg!(target_os = "macos") || cfg!(target_os = "linux") {
                 "ax".into()
             } else {
                 "ocr".into()
@@ -281,66 +291,116 @@ impl CaptureEngine {
         }
     }
 
+    fn emit_browser_visit(&self, browser: &str, url: String, title: String, ts: String) {
+        let domain = url_domain(&url);
+        let blocked = {
+            let s = self.shared.lock();
+            domain
+                .as_ref()
+                .map(|d| s.block_domains.iter().any(|b| d.contains(b)))
+                .unwrap_or(false)
+        };
+        if blocked {
+            return;
+        }
+        let chat = is_chat_surface(browser, "", &title) || is_chat_url(&url);
+        self.append_obs(json!({
+            "ts": ts,
+            "source": "browser",
+            "app": browser,
+            "window_title": title,
+            "url": url,
+            "domain": domain,
+            "dwell_ms": 0,
+            "redacted": false,
+            "chat": chat
+        }));
+    }
+
     fn tick_browser(&self) {
-        for (browser, hist) in browser_history_paths() {
+        // Per-browser cursors: Chromium visit_time (micros since 1601) and
+        // Firefox last_visit_date (PRTime micros since 1970) share no unit.
+        for (browser, hist, kind) in browser_history_paths() {
             if !hist.exists() {
                 continue;
             }
-            let tmp = std::env::temp_dir().join(format!("sb-hist-{browser}.db"));
+            let safe: String = browser
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect();
+            let tmp = std::env::temp_dir().join(format!("sb-hist-{safe}.db"));
             if fs::copy(&hist, &tmp).is_err() {
                 continue;
             }
-            let cursor = self.shared.lock().browser_cursor;
+            let cursor = self
+                .shared
+                .lock()
+                .browser_cursors
+                .get(&browser)
+                .copied()
+                .unwrap_or(0);
             if let Ok(conn) = Connection::open(&tmp) {
                 let mut max_visit = cursor;
-                let q = "SELECT urls.url, urls.title, visits.visit_time
-                         FROM visits
-                         JOIN urls ON urls.id = visits.url
-                         WHERE visits.visit_time > ?
-                         ORDER BY visits.visit_time ASC
-                         LIMIT 200";
-                if let Ok(mut stmt) = conn.prepare(q) {
-                    if let Ok(rows) = stmt.query_map([cursor], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1).unwrap_or_default(),
-                            row.get::<_, i64>(2)?,
-                        ))
-                    }) {
-                        for row in rows.flatten() {
-                            let (url, title, vt) = row;
-                            if vt > max_visit {
-                                max_visit = vt;
-                            }
-                            let domain = url_domain(&url);
-                            let blocked = {
-                                let s = self.shared.lock();
-                                domain
-                                    .as_ref()
-                                    .map(|d| s.block_domains.iter().any(|b| d.contains(b)))
-                                    .unwrap_or(false)
-                            };
-                            if blocked {
-                                continue;
-                            }
-                            let chat = is_chat_surface(browser, "", &title)
-                                || is_chat_url(&url);
-                            self.append_obs(json!({
-                                "ts": chrome_time_to_rfc3339(vt),
-                                "source": "browser",
-                                "app": browser,
-                                "window_title": title,
-                                "url": url,
-                                "domain": domain,
-                                "dwell_ms": 0,
-                                "redacted": false,
-                                "chat": chat
-                            }));
-                        }
+                let visits: Vec<(String, String, i64)> = match kind {
+                    BrowserKind::Chromium => {
+                        let q = "SELECT urls.url, urls.title, visits.visit_time
+                                 FROM visits
+                                 JOIN urls ON urls.id = visits.url
+                                 WHERE visits.visit_time > ?
+                                 ORDER BY visits.visit_time ASC
+                                 LIMIT 200";
+                        conn.prepare(q)
+                            .ok()
+                            .and_then(|mut stmt| {
+                                stmt.query_map([cursor], |row| {
+                                    Ok((
+                                        row.get::<_, String>(0)?,
+                                        row.get::<_, String>(1).unwrap_or_default(),
+                                        row.get::<_, i64>(2)?,
+                                    ))
+                                })
+                                .ok()
+                                .map(|rows| rows.flatten().collect())
+                            })
+                            .unwrap_or_default()
                     }
+                    BrowserKind::Firefox => {
+                        let q = "SELECT url, title, last_visit_date
+                                 FROM moz_places
+                                 WHERE last_visit_date > ?
+                                 ORDER BY last_visit_date ASC
+                                 LIMIT 200";
+                        conn.prepare(q)
+                            .ok()
+                            .and_then(|mut stmt| {
+                                stmt.query_map([cursor], |row| {
+                                    Ok((
+                                        row.get::<_, String>(0)?,
+                                        row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                                        row.get::<_, i64>(2)?,
+                                    ))
+                                })
+                                .ok()
+                                .map(|rows| rows.flatten().collect())
+                            })
+                            .unwrap_or_default()
+                    }
+                };
+                for (url, title, vt) in visits {
+                    if vt > max_visit {
+                        max_visit = vt;
+                    }
+                    let ts = match kind {
+                        BrowserKind::Chromium => chrome_time_to_rfc3339(vt),
+                        BrowserKind::Firefox => prtime_to_rfc3339(vt),
+                    };
+                    self.emit_browser_visit(&browser, url, title, ts);
                 }
                 if max_visit > cursor {
-                    self.shared.lock().browser_cursor = max_visit;
+                    self.shared
+                        .lock()
+                        .browser_cursors
+                        .insert(browser.clone(), max_visit);
                 }
             }
             let _ = fs::remove_file(&tmp);
@@ -571,6 +631,128 @@ impl CaptureEngine {
                 self.wake_core_loops();
             }
         }
+
+        #[cfg(target_os = "linux")]
+        {
+            let Some((fg_title, fg_exe, fg_app, fg_pid, fg_fullscreen)) =
+                crate::capture_linux::foreground_all()
+            else {
+                return;
+            };
+            // Widget is always-on-top — read the last real app underneath it.
+            // A focused widget also proves nothing is exclusive-fullscreen.
+            let (title, exe, app, target_pid, fullscreen) = {
+                let mut s = self.shared.lock();
+                if fg_exe.to_lowercase().contains("second-brain") {
+                    if s.last_user_exe.is_empty() {
+                        return;
+                    }
+                    (
+                        s.last_user_title.clone(),
+                        s.last_user_exe.clone(),
+                        s.last_user_app.clone(),
+                        s.last_user_pid,
+                        false,
+                    )
+                } else {
+                    s.last_user_title = fg_title.clone();
+                    s.last_user_exe = fg_exe.clone();
+                    s.last_user_app = fg_app.clone();
+                    s.last_user_pid = fg_pid;
+                    (fg_title, fg_exe, fg_app, fg_pid, fg_fullscreen)
+                }
+            };
+            let chat = is_chat_surface(&app, &exe, &title);
+            let exe_l = exe.to_lowercase();
+            let title_l = title.to_lowercase();
+            let focus_key = format!("{exe}|{title}");
+            if title_l.contains("incognito") || title_l.contains("private browsing") {
+                let mut s = self.shared.lock();
+                s.last_ocr_at = std::time::Instant::now();
+                s.last_ocr_focus_key = focus_key;
+                return;
+            }
+            let interval = Duration::from_secs(if chat { 5 } else { 8 });
+            let should = {
+                let s = self.shared.lock();
+                s.last_ocr_at.elapsed() > interval
+            };
+            if !should {
+                return;
+            }
+            {
+                let mut s = self.shared.lock();
+                if s.block_exes.iter().any(|b| exe_l.contains(b)) {
+                    s.last_ocr_at = std::time::Instant::now();
+                    s.last_ocr_focus_key = focus_key;
+                    return;
+                }
+                if s.block_domains.iter().any(|b| title_l.contains(b)) {
+                    s.last_ocr_at = std::time::Instant::now();
+                    s.last_ocr_focus_key = focus_key;
+                    return;
+                }
+            }
+
+            // AT-SPI tree of the focused app. The reader is dropped on empty
+            // polls so a dead bus connection reopens itself next interval.
+            let text = {
+                let mut ax = self.ax.lock();
+                if ax.is_none() {
+                    *ax = crate::capture_ax::AxReader::open();
+                }
+                ax.as_ref()
+                    .and_then(|r| r.snapshot_for_pid(target_pid))
+            };
+            let Some(text) = text else {
+                self.ax.lock().take();
+                // The bus can die mid-run (stale launcher keeps the name
+                // while its socket is gone): attempt the self-heal now so
+                // the next interval can reconnect instead of failing open
+                // until process restart.
+                crate::capture_linux::ensure_a11y_bus();
+                // No tree for a live bus usually means the toolkit needs an
+                // opt-in the app never got: diagnose once per exe instead
+                // of staying silent about the gap.
+                crate::capture_linux::note_ax_gap(&self.data_dir, &exe, target_pid);
+                let mut s = self.shared.lock();
+                s.last_ocr_at = std::time::Instant::now();
+                s.last_ocr_focus_key = focus_key;
+                return;
+            };
+            let text_hash = fnv1a_64(text.as_bytes());
+            let skip = {
+                let s = self.shared.lock();
+                s.last_ocr_text_hash != 0 && s.last_ocr_text_hash == text_hash
+            };
+            {
+                let mut s = self.shared.lock();
+                s.last_ocr_at = std::time::Instant::now();
+                s.last_ocr_text_hash = text_hash;
+                s.last_ocr_focus_key = focus_key;
+            }
+            if skip || text.trim().len() < 8 {
+                return;
+            }
+            let clipped = clip_capture_text(&text, chat);
+            self.append_obs(json!({
+                "ts": Utc::now().to_rfc3339(),
+                "source": "ocr",
+                "method": "ax",
+                "app": app,
+                "exe": exe,
+                "window_title": title,
+                "text": clipped,
+                "dwell_ms": 0,
+                "redacted": false,
+                "chat": chat,
+                "fullscreen": fullscreen,
+                "window_ocr": true
+            }));
+            if chat {
+                self.wake_core_loops();
+            }
+        }
     }
 
     fn append_obs(&self, value: serde_json::Value) {
@@ -737,13 +919,22 @@ fn load_control_into(
     }
 }
 
-fn browser_history_paths() -> Vec<(&'static str, PathBuf)> {
-    let mut out = Vec::new();
+#[derive(Clone, Copy, PartialEq)]
+enum BrowserKind {
+    Chromium,
+    Firefox,
+}
+
+fn browser_history_paths() -> Vec<(String, PathBuf, BrowserKind)> {
+    let mut out: Vec<(String, PathBuf, BrowserKind)> = Vec::new();
+    let mut chromium = |name: &str, path: PathBuf| {
+        out.push((name.to_string(), path, BrowserKind::Chromium));
+    };
     if let Some(base) = BaseDirs::new() {
         #[cfg(windows)]
         {
             let local = base.data_local_dir();
-            out.push((
+            chromium(
                 "chrome",
                 local
                     .join("Google")
@@ -751,8 +942,8 @@ fn browser_history_paths() -> Vec<(&'static str, PathBuf)> {
                     .join("User Data")
                     .join("Default")
                     .join("History"),
-            ));
-            out.push((
+            );
+            chromium(
                 "edge",
                 local
                     .join("Microsoft")
@@ -760,63 +951,133 @@ fn browser_history_paths() -> Vec<(&'static str, PathBuf)> {
                     .join("User Data")
                     .join("Default")
                     .join("History"),
-            ));
+            );
         }
         #[cfg(target_os = "macos")]
         {
             // Application Support — no "User Data" segment (except Arc).
             let support = base.data_local_dir();
-            out.push((
+            chromium(
                 "chrome",
                 support
                     .join("Google")
                     .join("Chrome")
                     .join("Default")
                     .join("History"),
-            ));
-            out.push((
+            );
+            chromium(
                 "edge",
-                support
-                    .join("Microsoft Edge")
-                    .join("Default")
-                    .join("History"),
-            ));
-            out.push((
+                support.join("Microsoft Edge").join("Default").join("History"),
+            );
+            chromium(
                 "brave",
                 support
                     .join("BraveSoftware")
                     .join("Brave-Browser")
                     .join("Default")
                     .join("History"),
-            ));
-            out.push((
+            );
+            chromium(
                 "arc",
                 support
                     .join("Arc")
                     .join("User Data")
                     .join("Default")
                     .join("History"),
-            ));
+            );
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
             let home = base.home_dir();
-            out.push((
+            let cfg = home.join(".config");
+            chromium(
                 "chrome",
-                home.join(".config")
-                    .join("google-chrome")
+                cfg.join("google-chrome").join("Default").join("History"),
+            );
+            chromium(
+                "chromium",
+                cfg.join("chromium").join("Default").join("History"),
+            );
+            chromium(
+                "brave",
+                cfg.join("BraveSoftware")
+                    .join("Brave-Browser")
                     .join("Default")
                     .join("History"),
-            ));
+            );
+            chromium(
+                "edge",
+                cfg.join("microsoft-edge").join("Default").join("History"),
+            );
+            out.extend(firefox_places(base.home_dir()));
         }
     }
     out
 }
 
+/// Firefox-family history (places.sqlite, PRTime micros since Unix epoch).
+/// Profiles live in ~/.mozilla/firefox/*.default*/ and ~/.zen/*/.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn firefox_places(home: &Path) -> Vec<(String, PathBuf, BrowserKind)> {
+    let mut out = Vec::new();
+    let mut scan = |root: &Path, prefix: &str, any_subdir: bool| {
+        let Ok(entries) = fs::read_dir(root) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if !p.is_dir() {
+                continue;
+            }
+            let name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if !any_subdir && !name.contains(".default") {
+                continue;
+            }
+            let places = p.join("places.sqlite");
+            if !places.exists() {
+                continue;
+            }
+            let safe: String = name
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() {
+                        c
+                    } else {
+                        '-'
+                    }
+                })
+                .collect();
+            out.push((
+                format!("{prefix}-{safe}"),
+                places,
+                BrowserKind::Firefox,
+            ));
+        }
+    };
+    scan(&home.join(".mozilla").join("firefox"), "firefox", false);
+    scan(&home.join(".zen"), "zen", true);
+    out
+}
+
 fn chrome_time_to_rfc3339(visit_time: i64) -> String {
     let unix_us = visit_time - 11_644_473_600_000_000;
-    let secs = unix_us / 1_000_000;
-    let nsecs = ((unix_us % 1_000_000) * 1000) as u32;
+    let secs = unix_us.div_euclid(1_000_000);
+    let nsecs = (unix_us.rem_euclid(1_000_000) * 1000) as u32;
+    if let Some(dt) = DateTime::<Utc>::from_timestamp(secs, nsecs) {
+        dt.to_rfc3339()
+    } else {
+        Utc::now().to_rfc3339()
+    }
+}
+
+/// Firefox PRTime: microseconds since the Unix epoch.
+fn prtime_to_rfc3339(prtime: i64) -> String {
+    let secs = prtime.div_euclid(1_000_000);
+    let nsecs = (prtime.rem_euclid(1_000_000) * 1000) as u32;
     if let Some(dt) = DateTime::<Utc>::from_timestamp(secs, nsecs) {
         dt.to_rfc3339()
     } else {
@@ -853,7 +1114,11 @@ fn idle_seconds() -> u32 {
     {
         crate::capture_mac::idle_seconds()
     }
-    #[cfg(all(not(windows), not(target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        crate::capture_linux::idle_seconds()
+    }
+    #[cfg(all(not(windows), not(target_os = "macos"), not(target_os = "linux")))]
     {
         0
     }
@@ -908,7 +1173,11 @@ fn foreground_window_info() -> Option<(String, String, String)> {
     {
         crate::capture_mac::foreground_window_info()
     }
-    #[cfg(all(not(windows), not(target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        crate::capture_linux::foreground_window_info()
+    }
+    #[cfg(all(not(windows), not(target_os = "macos"), not(target_os = "linux")))]
     {
         None
     }
@@ -1106,7 +1375,11 @@ fn foreground_pid() -> Option<u32> {
     {
         crate::capture_mac::foreground_pid()
     }
-    #[cfg(all(not(windows), not(target_os = "macos")))]
+    #[cfg(target_os = "linux")]
+    {
+        crate::capture_linux::foreground_pid()
+    }
+    #[cfg(all(not(windows), not(target_os = "macos"), not(target_os = "linux")))]
     {
         None
     }

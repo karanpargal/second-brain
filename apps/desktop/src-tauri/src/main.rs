@@ -5,9 +5,41 @@ mod capture;
 mod core;
 #[cfg(target_os = "macos")]
 mod capture_mac;
+#[cfg(target_os = "linux")]
+mod capture_ax;
+#[cfg(target_os = "linux")]
+mod capture_linux;
+#[cfg(target_os = "linux")]
+mod shortcut_portal;
 
 use capture::{CaptureEngine, CaptureStatus};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Last toggle in millis since an arbitrary epoch. The X11 grab and the
+/// portal binding can both deliver one press; the second arrival inside the
+/// window is dropped so the widget toggles exactly once.
+static LAST_TOGGLE_MS: AtomicU64 = AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+pub(crate) fn toggle_main_debounced(app: &AppHandle) {
+    #[cfg(target_os = "linux")]
+    let window_ms = shortcut_portal::DEBOUNCE.as_millis() as u64;
+    #[cfg(not(target_os = "linux"))]
+    let window_ms = 400u64;
+    let now = now_ms();
+    if now.saturating_sub(LAST_TOGGLE_MS.load(Ordering::SeqCst)) < window_ms {
+        return;
+    }
+    LAST_TOGGLE_MS.store(now, Ordering::SeqCst);
+    toggle_main(app);
+}
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -264,6 +296,18 @@ It may still be warming up.</div>
 }
 
 fn main() {
+    // WebKitGTK's dmabuf renderer dies with a fatal Wayland protocol error
+    // (`wp_linux_drm_syncobj` "Missing acquire timeline") on stacks with
+    // broken explicit sync (seen: NVIDIA + Hyprland). Fall back to the
+    // shared-memory path unless the user overrode it; the widget is mostly
+    // static UI, so the cost is negligible and the alternative is no app.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        // SAFETY: single-threaded at process entry, before any threads spawn.
+        unsafe {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
     let engine = Arc::new(CaptureEngine::new());
     engine.start();
     let engine_for_setup = engine.clone();
@@ -274,8 +318,16 @@ fn main() {
             MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ))
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_main(app);
+        // Second launches signal the primary instead of starting a new app:
+        // `--toggle` flips the widget (compositor keybinds use this where
+        // global grabs can't reach, i.e. Wayland), anything else shows it.
+        // A first launch with --toggle just starts normally (widget shows).
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if args.iter().any(|a| a == "--toggle") {
+                toggle_main_debounced(app);
+            } else {
+                show_main(app);
+            }
         }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
@@ -422,10 +474,17 @@ fn main() {
                     shortcut,
                     move |_app, _s, event| {
                         if event.state == ShortcutState::Pressed {
-                            toggle_main(&app_handle);
+                            toggle_main_debounced(&app_handle);
                         }
                     },
                 )?;
+                // Wayland sessions: the X11 grab above never fires under a
+                // native Wayland window, so bind the portal too (fail-open).
+                #[cfg(target_os = "linux")]
+                {
+                    let portal_app = app.handle().clone();
+                    std::thread::spawn(move || shortcut_portal::run(portal_app));
+                }
             }
 
             #[cfg(desktop)]
