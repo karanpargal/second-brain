@@ -28,24 +28,15 @@ pick_target() {
 
 IFS=$'\t' read -r kind target < <(pick_target)
 
+if [[ "$kind" == "dev" ]]; then
+  echo "No built bundle or binary found - run 'npm run package:app' first (or 'npm run dev:desktop' for a dev session)." >&2
+  exit 1
+fi
+
 mkdir -p "$APP_DIR"
 DESKTOP="$APP_DIR/second-brain.desktop"
-if [[ "$kind" == "dev" ]]; then
-  echo "No bundle yet - launcher runs the dev shell until you build (npm run package:app)."
-  cat > "$DESKTOP" <<EOF
-[Desktop Entry]
-Type=Application
-Name=Second Brain
-Comment=Local-first ambient memory widget
-Exec=bash "$target"
-Icon=$ICON
-Terminal=true
-Categories=Utility;
-StartupWMClass=second-brain-desktop
-EOF
-else
-  echo "Launcher points at: $target"
-  cat > "$DESKTOP" <<EOF
+echo "Launcher points at: $target"
+cat > "$DESKTOP" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Second Brain
@@ -56,7 +47,6 @@ Terminal=false
 Categories=Utility;
 StartupWMClass=second-brain-desktop
 EOF
-fi
 chmod +x "$DESKTOP"
 
 if [[ "$AUTOSTART" == 1 ]]; then

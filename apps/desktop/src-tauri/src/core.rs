@@ -380,9 +380,11 @@ fn find_node() -> Option<PathBuf> {
             return Some(p);
         }
         // Last resort: login-shell PATH (covers nix profile, asdf, mise
-        // activate, and anything else the interactive shell sets up).
+        // activate, and anything else the login shell sets up). Login but
+        // NOT interactive: -i would run rc files that can prompt or hang
+        // a GUI launch with no terminal attached.
         if let Ok(out) = Command::new("bash")
-            .args(["-ilc", "command -v node"])
+            .args(["-lc", "command -v node"])
             .output()
         {
             if out.status.success() {

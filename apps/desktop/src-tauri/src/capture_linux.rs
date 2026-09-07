@@ -1,9 +1,12 @@
-//! Linux foreground-window + idle detection.
+//! Linux foreground-window + idle detection + accessibility bootstrap.
 //!
-//! No X11/Wayland client libraries: probe the compositor in order
-//! Hyprland -> Sway -> X11 (xprop) -> xdotool, each shelled out with a hard
-//! timeout so a dead compositor socket can never stall the capture thread.
-//! std + serde_json only.
+//! Foreground titles come from the compositor in order Hyprland -> Sway ->
+//! niri -> GNOME Shell -> X11 (xprop), each shelled out or D-Bus-queried
+//! with a hard timeout so a dead compositor socket can never stall the
+//! capture thread. Idle time uses the session-native source (XScreenSaver,
+//! Mutter IdleMonitor, ext-idle-notify). The a11y helpers own
+//! `org.a11y.Status`, start the AT-SPI bus when missing, and heal a stale
+//! bus owner. Crates beyond std: serde_json, zbus, wayland-client/protocols.
 #![cfg(target_os = "linux")]
 
 use std::io::Read;

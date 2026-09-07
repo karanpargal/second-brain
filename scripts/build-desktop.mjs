@@ -33,7 +33,10 @@ function isArchLinux() {
 }
 
 const finalArgs = [...args];
-if (process.platform === "linux" && isArchLinux() && !args.includes("--bundles")) {
+const hasBundles = args.some(
+  (a) => a === "--bundles" || a.startsWith("--bundles="),
+);
+if (process.platform === "linux" && isArchLinux() && !hasBundles) {
   finalArgs.push("--bundles", "deb,rpm");
   console.log("[build-desktop] Arch-based distro: bundling deb+rpm (AppImage needs an Ubuntu build host; Arch installs via packaging/arch/PKGBUILD)");
 }

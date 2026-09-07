@@ -1,6 +1,6 @@
 # Second Brain
 
-Local-first ambient memory for **Windows, macOS, and Linux**. The desktop app captures what you work on (windows, browser history, on-screen text — titles + history only on Linux), finds **open loops**, and keeps context searchable — mostly on-device via [Ollama](https://ollama.com/). Optional Gmail / Calendar / GitHub are **read-only**. Optional cloud models apply only to **Ask**, if you turn them on.
+Local-first ambient memory for **Windows, macOS, and Linux**. The desktop app captures what you work on (windows, browser history, on-screen text), finds **open loops**, and keeps context searchable — mostly on-device via [Ollama](https://ollama.com/). Optional Gmail / Calendar / GitHub are **read-only**. Optional cloud models apply only to **Ask**, if you turn them on.
 
 **Propose-only** — nothing is sent or modified in external accounts unless you explicitly connect that provider. Detected loops wait for you (or auto-close when evidence says they’re done).
 
