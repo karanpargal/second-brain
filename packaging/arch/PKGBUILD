@@ -1,0 +1,75 @@
+# Maintainer: Second Brain contributors
+# Native Arch package (source build). AppImage is intentionally not used:
+# linuxdeploy's bundled binutils cannot strip Arch's DT_RELR binaries and
+# its GTK plugin assumes gdk-pixbuf loaders Arch no longer ships, so
+# `tauri build` with the AppImage target always fails on Arch.
+pkgname=second-brain-git
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="Local-first ambient memory: floating widget, PC capture, and chat over your own data"
+arch=('x86_64')
+url="https://github.com/karanpargal/second-brain"
+license=('MIT')
+depends=(
+  webkit2gtk-4.1
+  libayatana-appindicator
+  librsvg
+  openssl
+  at-spi2-core
+  nodejs
+)
+makedepends=(
+  git
+  rust
+  npm
+  curl
+  file
+)
+optdepends=(
+  'xdg-desktop-portal: file picker and screenshots on Wayland'
+)
+# makepkg's default -flto=auto makes the `cc` crate emit GCC LTO bytecode
+# for the bundled sqlite amalgamation, which rust-lld cannot consume at
+# final link (undefined sqlite3_* symbols). Native LTO stays off; the
+# release profile already optimizes without it.
+options=('!lto')
+source=("$pkgname::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$pkgname"
+  printf "%s.r%s.%s" "$(node -p "require('./package.json').version")" \
+    "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd "$pkgname"
+  export npm_config_cache="$srcdir/npm-cache"
+  export CARGO_HOME="$srcdir/cargo-home"
+  export RUSTUP_TOOLCHAIN=stable
+  npm ci --no-audit --no-fund
+  # Frontend first (tauri.conf frontendDist), then the shell directly:
+  # this tauri CLI knows only deb/rpm/appimage bundles, and none of those
+  # is the Arch deliverable, so bundling is skipped entirely.
+  npm run build -w @second-brain/desktop
+  cargo build --release --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+}
+
+package() {
+  cd "$pkgname"
+  install -Dm755 "apps/desktop/src-tauri/target/release/second-brain-desktop" \
+    "$pkgdir/usr/bin/second-brain-desktop"
+  install -Dm644 "apps/desktop/src-tauri/icons/icon.png" \
+    "$pkgdir/usr/share/icons/hicolor/128x128/apps/second-brain-desktop.png"
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/second-brain.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Second Brain
+Comment=Local-first ambient memory widget
+Exec=/usr/bin/second-brain-desktop
+Icon=second-brain-desktop
+Terminal=false
+Categories=Utility;
+StartupWMClass=second-brain-desktop
+EOF
+}

@@ -27,7 +27,7 @@
     "shortcut": "powershell -ExecutionPolicy Bypass -File scripts/install-desktop-shortcut.ps1",
     "shortcut:linux": "bash scripts/install-desktop-shortcut.sh",
     "build": "npm run build -w @second-brain/web",
-    "build:desktop": "npm run tauri build -w @second-brain/desktop",
+    "build:desktop": "node scripts/build-desktop.mjs",
     "sign:mac": "node scripts/sign-macos.mjs",
     "package:app": "npm run build && npm run build:desktop && npm run sign:mac",
     "db:migrate": "npm run db:migrate -w @second-brain/core",

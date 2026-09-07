@@ -35,9 +35,13 @@
             libayatana-appindicator
             glib-networking
             gsettings-desktop-schemas
+            # AT-SPI bus + registry for on-screen text capture
+            at-spi2-core
+            # gsettings CLI (toolkit-accessibility switch), Wayland client lib
+            glib
+            wayland
             # Capture helpers (Hyprland/Sway ship their own; these cover X11)
             xorg.xprop
-            xdotool
             xprintidle
           ];
 

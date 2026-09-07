@@ -38,7 +38,7 @@ npm run package:app    # .deb / .AppImage under apps/desktop/src-tauri/target/re
 npm run shortcut:linux # app-menu entry → that bundle (--autostart for login)
 ```
 
-Needs webkit2gtk + build tools (see [Getting started](GETTING_STARTED.md)); NixOS via `nix develop`. Capture is window titles + browser history (Hyprland/Sway/X11); on-screen text is not implemented on Linux yet.
+Needs webkit2gtk + build tools (see [Getting started](GETTING_STARTED.md)); NixOS via `nix develop`. Capture is window titles + browser history + AT-SPI on-screen text (Hyprland/Sway/X11).
 
 The app starts local core, the floating widget, and capture by itself.
 
