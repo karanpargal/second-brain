@@ -485,6 +485,10 @@ export function WidgetPage() {
   const [healthInfo, setHealthInfo] = useState<Health | null>(null);
   const [axTrusted, setAxTrusted] = useState<boolean | null>(null);
   const [captureMethod, setCaptureMethod] = useState<string | null>(null);
+  const [capturing, setCapturing] = useState(true);
+  // Wayland has no tray protocol and GNOME/Hyprland ship no tray host, so
+  // "Hide to tray" would strand users with no way back — label honestly.
+  const hideLabel = navigator.userAgent.includes("Linux") ? "Hide window" : "Hide to tray";
   const [voice, setVoice] = useState<string | null>(null);
   const [learnWant, setLearnWant] = useState("");
   const [askQ, setAskQ] = useState("");
@@ -567,6 +571,7 @@ export function WidgetPage() {
         const s = (await tauriInvoke("capture_status")) as {
           accessibility_trusted?: boolean;
           capture_method?: string;
+          capturing?: boolean;
         } | null;
         if (cancelled || !s) return;
         if (typeof s.accessibility_trusted === "boolean") {
@@ -574,6 +579,9 @@ export function WidgetPage() {
         }
         if (typeof s.capture_method === "string") {
           setCaptureMethod(s.capture_method);
+        }
+        if (typeof s.capturing === "boolean") {
+          setCapturing(s.capturing);
         }
       } catch {
         /* browser / non-Tauri */
@@ -1188,13 +1196,45 @@ export function WidgetPage() {
                     </a>
                     <button
                       type="button"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-zinc-50"
+                      onClick={() => {
+                        setMenu(false);
+                        void (async () => {
+                          await tauriInvoke(
+                            capturing ? "pause_capture" : "resume_capture",
+                            capturing ? { minutes: 60 } : undefined,
+                          );
+                          try {
+                            const s = (await tauriInvoke("capture_status")) as {
+                              capturing?: boolean;
+                            } | null;
+                            if (typeof s?.capturing === "boolean") {
+                              setCapturing(s.capturing);
+                            }
+                          } catch {
+                            /* browser / non-Tauri */
+                          }
+                        })();
+                      }}
+                    >
+                      <span
+                        className={`inline-block h-1.5 w-1.5 rounded-full ${
+                          capturing ? "bg-emerald-500" : "bg-zinc-300"
+                        }`}
+                      />
+                      <span className="truncate">
+                        {capturing ? "Pause capture 1h" : "Resume capture"}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
                       className="block w-full px-3 py-2 text-left hover:bg-zinc-50"
                       onClick={() => {
                         setMenu(false);
                         void hideWidget();
                       }}
                     >
-                      Hide to tray
+                      {hideLabel}
                     </button>
                     <button
                       type="button"
