@@ -9,9 +9,37 @@ mod capture_mac;
 mod capture_ax;
 #[cfg(target_os = "linux")]
 mod capture_linux;
+#[cfg(target_os = "linux")]
+mod shortcut_portal;
 
 use capture::{CaptureEngine, CaptureStatus};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Last toggle in millis since an arbitrary epoch. The X11 grab and the
+/// portal binding can both deliver one press; the second arrival inside the
+/// window is dropped so the widget toggles exactly once.
+static LAST_TOGGLE_MS: AtomicU64 = AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+pub(crate) fn toggle_main_debounced(app: &AppHandle) {
+    #[cfg(target_os = "linux")]
+    let window_ms = shortcut_portal::DEBOUNCE.as_millis() as u64;
+    #[cfg(not(target_os = "linux"))]
+    let window_ms = 400u64;
+    let now = now_ms();
+    if now.saturating_sub(LAST_TOGGLE_MS.load(Ordering::SeqCst)) < window_ms {
+        return;
+    }
+    LAST_TOGGLE_MS.store(now, Ordering::SeqCst);
+    toggle_main(app);
+}
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -438,10 +466,17 @@ fn main() {
                     shortcut,
                     move |_app, _s, event| {
                         if event.state == ShortcutState::Pressed {
-                            toggle_main(&app_handle);
+                            toggle_main_debounced(&app_handle);
                         }
                     },
                 )?;
+                // Wayland sessions: the X11 grab above never fires under a
+                // native Wayland window, so bind the portal too (fail-open).
+                #[cfg(target_os = "linux")]
+                {
+                    let portal_app = app.handle().clone();
+                    std::thread::spawn(move || shortcut_portal::run(portal_app));
+                }
             }
 
             #[cfg(desktop)]
