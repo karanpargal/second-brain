@@ -46,6 +46,17 @@ windows = { version = "0.58", features = [
 ] }
 webview2-com = "0.38"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Signaling a stale same-user AT-SPI launcher during bus self-heal.
+libc = "0.2"
+# AT-SPI tree reads (blocking proxies; no async runtime needed) + D-Bus helpers.
+atspi-proxies = "0.14"
+enumflags2 = "0.7"
+zbus = "5"
+# Native idle: ext-idle-notify on wlroots/KDE Wayland sessions.
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString"] }

@@ -6,6 +6,8 @@ mod core;
 #[cfg(target_os = "macos")]
 mod capture_mac;
 #[cfg(target_os = "linux")]
+mod capture_ax;
+#[cfg(target_os = "linux")]
 mod capture_linux;
 
 use capture::{CaptureEngine, CaptureStatus};
@@ -266,6 +268,18 @@ It may still be warming up.</div>
 }
 
 fn main() {
+    // WebKitGTK's dmabuf renderer dies with a fatal Wayland protocol error
+    // (`wp_linux_drm_syncobj` "Missing acquire timeline") on stacks with
+    // broken explicit sync (seen: NVIDIA + Hyprland). Fall back to the
+    // shared-memory path unless the user overrode it; the widget is mostly
+    // static UI, so the cost is negligible and the alternative is no app.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        // SAFETY: single-threaded at process entry, before any threads spawn.
+        unsafe {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
     let engine = Arc::new(CaptureEngine::new());
     engine.start();
     let engine_for_setup = engine.clone();

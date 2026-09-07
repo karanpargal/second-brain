@@ -528,7 +528,7 @@ export function SettingsPage() {
             ["browser", "Browser history (Chrome / Edge / Brave / Firefox)"],
             [
               "ocr",
-              "Active-window text (Windows OCR / macOS Accessibility; Linux captures titles + history only — never saved as image)",
+              "Active-window text (Windows OCR / macOS Accessibility / Linux AT-SPI tree — never saved as image)",
             ],
           ] as const
         ).map(([key, label]) => (

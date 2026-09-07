@@ -53,6 +53,8 @@ pub struct CaptureEngine {
     shared: Arc<Mutex<Shared>>,
     data_dir: PathBuf,
     spool_dir: PathBuf,
+    #[cfg(target_os = "linux")]
+    ax: parking_lot::Mutex<Option<crate::capture_ax::AxReader>>,
 }
 
 impl CaptureEngine {
@@ -96,6 +98,8 @@ impl CaptureEngine {
             block_domains.insert(d.to_string());
         }
         load_control_into(&data_dir, &mut block_exes, &mut block_domains);
+        #[cfg(target_os = "linux")]
+        crate::capture_linux::bootstrap();
 
         Self {
             running: AtomicBool::new(false),
@@ -120,6 +124,8 @@ impl CaptureEngine {
             })),
             data_dir,
             spool_dir,
+            #[cfg(target_os = "linux")]
+            ax: parking_lot::Mutex::new(None),
         }
     }
 
@@ -161,11 +167,9 @@ impl CaptureEngine {
             last_obs: s.last_obs.clone(),
             spool_dir: self.spool_dir.display().to_string(),
             accessibility_trusted: platform_accessibility_trusted(),
-            capture_method: if cfg!(target_os = "macos") {
+            // macOS reads the Accessibility tree, Linux the AT-SPI tree.
+            capture_method: if cfg!(target_os = "macos") || cfg!(target_os = "linux") {
                 "ax".into()
-            } else if cfg!(target_os = "linux") {
-                // Window titles + browser history; no on-screen text yet.
-                "window".into()
             } else {
                 "ocr".into()
             },
@@ -593,6 +597,125 @@ impl CaptureEngine {
             let text = {
                 let s = self.shared.lock();
                 filter_blocked_ocr_text(&text, &s.block_domains)
+            };
+            let text_hash = fnv1a_64(text.as_bytes());
+            let skip = {
+                let s = self.shared.lock();
+                s.last_ocr_text_hash != 0 && s.last_ocr_text_hash == text_hash
+            };
+            {
+                let mut s = self.shared.lock();
+                s.last_ocr_at = std::time::Instant::now();
+                s.last_ocr_text_hash = text_hash;
+                s.last_ocr_focus_key = focus_key;
+            }
+            if skip || text.trim().len() < 8 {
+                return;
+            }
+            let clipped = clip_capture_text(&text, chat);
+            self.append_obs(json!({
+                "ts": Utc::now().to_rfc3339(),
+                "source": "ocr",
+                "method": "ax",
+                "app": app,
+                "exe": exe,
+                "window_title": title,
+                "text": clipped,
+                "dwell_ms": 0,
+                "redacted": false,
+                "chat": chat,
+                "fullscreen": false,
+                "window_ocr": true
+            }));
+            if chat {
+                self.wake_core_loops();
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let Some((fg_title, fg_exe, fg_app)) = foreground_window_info() else {
+                return;
+            };
+            // Widget is always-on-top — read the last real app underneath it
+            let (title, exe, app, target_pid) = {
+                let mut s = self.shared.lock();
+                if fg_exe.to_lowercase().contains("second-brain") {
+                    if s.last_user_exe.is_empty() {
+                        return;
+                    }
+                    (
+                        s.last_user_title.clone(),
+                        s.last_user_exe.clone(),
+                        s.last_user_app.clone(),
+                        s.last_user_pid,
+                    )
+                } else {
+                    let pid = foreground_pid().unwrap_or(0);
+                    s.last_user_title = fg_title.clone();
+                    s.last_user_exe = fg_exe.clone();
+                    s.last_user_app = fg_app.clone();
+                    s.last_user_pid = pid;
+                    (fg_title, fg_exe, fg_app, pid)
+                }
+            };
+            let chat = is_chat_surface(&app, &exe, &title);
+            let exe_l = exe.to_lowercase();
+            let title_l = title.to_lowercase();
+            let focus_key = format!("{exe}|{title}");
+            if title_l.contains("incognito") || title_l.contains("private browsing") {
+                let mut s = self.shared.lock();
+                s.last_ocr_at = std::time::Instant::now();
+                s.last_ocr_focus_key = focus_key;
+                return;
+            }
+            let interval = Duration::from_secs(if chat { 5 } else { 8 });
+            let should = {
+                let s = self.shared.lock();
+                s.last_ocr_at.elapsed() > interval
+            };
+            if !should {
+                return;
+            }
+            {
+                let mut s = self.shared.lock();
+                if s.block_exes.iter().any(|b| exe_l.contains(b)) {
+                    s.last_ocr_at = std::time::Instant::now();
+                    s.last_ocr_focus_key = focus_key;
+                    return;
+                }
+                if s.block_domains.iter().any(|b| title_l.contains(b)) {
+                    s.last_ocr_at = std::time::Instant::now();
+                    s.last_ocr_focus_key = focus_key;
+                    return;
+                }
+            }
+
+            // AT-SPI tree of the focused app. The reader is dropped on empty
+            // polls so a dead bus connection reopens itself next interval.
+            let text = {
+                let mut ax = self.ax.lock();
+                if ax.is_none() {
+                    *ax = crate::capture_ax::AxReader::open();
+                }
+                ax.as_ref()
+                    .and_then(|r| r.snapshot_for_pid(target_pid))
+            };
+            let Some(text) = text else {
+                self.ax.lock().take();
+                // The bus can die mid-run (stale launcher keeps the name
+                // while its socket is gone): attempt the self-heal now so
+                // the next interval can reconnect instead of failing open
+                // until process restart.
+                crate::capture_linux::ensure_a11y_bus();
+                // No tree for a live bus usually means the toolkit needs an
+                // opt-in the app never got: diagnose once per exe instead
+                // of staying silent about the gap.
+                crate::capture_linux::note_ax_gap(&self.data_dir, &exe, target_pid);
+                let mut s = self.shared.lock();
+                s.last_ocr_at = std::time::Instant::now();
+                s.last_ocr_focus_key = focus_key;
+                return;
             };
             let text_hash = fnv1a_64(text.as_bytes());
             let skip = {
