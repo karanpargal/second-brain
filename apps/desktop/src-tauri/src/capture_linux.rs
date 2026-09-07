@@ -121,7 +121,14 @@ fn finish(title: String, pid: u32, class: &str) -> Option<(String, String, Strin
     Some((title, exe, app))
 }
 
-fn hyprland_active() -> Option<(String, u32, String)> {
+/// Hyprland `fullscreen` field: 0 windowed, 1 maximized, 2 fullscreen,
+/// 3 maximized + fullscreen. Maximized is still a window; only an
+/// exclusive fullscreen claims the output.
+fn hypr_fullscreen(v: &serde_json::Value) -> bool {
+    v.get("fullscreen").and_then(|f| f.as_u64()).unwrap_or(0) >= 2
+}
+
+fn hyprland_active() -> Option<(String, u32, String, bool)> {
     if std::env::var("HYPRLAND_INSTANCE_SIGNATURE").is_err()
         && find_on_path("hyprctl").is_none()
     {
@@ -135,10 +142,10 @@ fn hyprland_active() -> Option<(String, u32, String)> {
     if pid == 0 {
         return None;
     }
-    Some((title, pid, class))
+    Some((title, pid, class, hypr_fullscreen(&v)))
 }
 
-fn sway_focused(node: &serde_json::Value, best: &mut Option<(String, u32, String)>) {
+fn sway_focused(node: &serde_json::Value, best: &mut Option<(String, u32, String, bool)>) {
     if let Some(obj) = node.as_object() {
         let focused = obj.get("focused").and_then(|f| f.as_bool()).unwrap_or(false);
         if focused {
@@ -157,8 +164,15 @@ fn sway_focused(node: &serde_json::Value, best: &mut Option<(String, u32, String
                             .map(|s| s.to_string())
                     })
                     .unwrap_or_default();
+                // Sway fullscreen_mode: 0 windowed, 1 output-fullscreen,
+                // 2 global fullscreen. Any nonzero claims the output.
+                let fullscreen = obj
+                    .get("fullscreen_mode")
+                    .and_then(|m| m.as_u64())
+                    .unwrap_or(0)
+                    != 0;
                 // Deepest focused node wins: overwrite as we descend.
-                *best = Some((name.to_string(), pid as u32, app));
+                *best = Some((name.to_string(), pid as u32, app, fullscreen));
             }
         }
         if let Some(nodes) = obj.get("nodes").and_then(|n| n.as_array()) {
@@ -178,7 +192,79 @@ fn sway_focused(node: &serde_json::Value, best: &mut Option<(String, u32, String
     }
 }
 
-fn sway_active() -> Option<(String, u32, String)> {
+/// niri focused window via its IPC (`NIRI_SOCKET`). Shape:
+/// `{"id":1,"title":"…","app_id":"…","pid":123,"is_fullscreen":false}`.
+/// Unverifiable in CI (no niri session here); parse defensively.
+fn parse_niri_window(v: &serde_json::Value) -> Option<(String, u32, String, bool)> {
+    let obj = v.as_object()?;
+    let title = obj.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string();
+    let pid = obj.get("pid").and_then(|p| p.as_u64()).unwrap_or(0) as u32;
+    let app = obj
+        .get("app_id")
+        .and_then(|a| a.as_str())
+        .unwrap_or("")
+        .to_string();
+    let fullscreen = obj
+        .get("is_fullscreen")
+        .and_then(|f| f.as_bool())
+        .unwrap_or(false);
+    if pid == 0 {
+        return None;
+    }
+    Some((title, pid, app, fullscreen))
+}
+
+fn niri_active() -> Option<(String, u32, String, bool)> {
+    if std::env::var("NIRI_SOCKET").is_err() && find_on_path("niri").is_none() {
+        return None;
+    }
+    let out = run_fast("niri", &["msg", "--json", "focused-window"])?;
+    let v: serde_json::Value = serde_json::from_str(&out).ok()?;
+    if v.is_null() {
+        return None;
+    }
+    parse_niri_window(&v)
+}
+
+/// GNOME has no focus CLI; ask the shell itself over D-Bus. `Eval` runs on
+/// stock GNOME (hardened setups may disable it) and returns a JSON string.
+/// Unverifiable in CI (no GNOME session here); the script is deliberately
+/// one expression with a null-safe guard.
+const GNOME_FOCUS_SCRIPT: &str = "global.display.focus_window ? JSON.stringify({t: global.display.focus_window.get_title(), p: global.display.focus_window.get_pid(), c: global.display.focus_window.get_wm_class(), f: global.display.focus_window.is_fullscreen()}) : \"null\"";
+
+fn parse_gnome_focus(success: bool, result: &str) -> Option<(String, u32, String, bool)> {
+    if !success {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(result).ok()?;
+    if v.is_null() {
+        return None;
+    }
+    let obj = v.as_object()?;
+    let title = obj.get("t").and_then(|t| t.as_str()).unwrap_or("").to_string();
+    let pid = obj.get("p").and_then(|p| p.as_u64()).unwrap_or(0) as u32;
+    let app = obj.get("c").and_then(|c| c.as_str()).unwrap_or("").to_string();
+    let fullscreen = obj.get("f").and_then(|f| f.as_bool()).unwrap_or(false);
+    if pid == 0 {
+        return None;
+    }
+    Some((title, pid, app, fullscreen))
+}
+
+fn gnome_active() -> Option<(String, u32, String, bool)> {
+    if !desktop_is(&["gnome", "ubuntu"]) {
+        return None;
+    }
+    let conn = BlockingConnection::session().ok()?;
+    let proxy =
+        zbus::blocking::Proxy::new(&conn, "org.gnome.Shell", "/org/gnome/Shell", "org.gnome.Shell")
+            .ok()?;
+    let (success, result): (bool, String) =
+        proxy.call("Eval", &(GNOME_FOCUS_SCRIPT,)).ok()?;
+    parse_gnome_focus(success, &result)
+}
+
+fn sway_active() -> Option<(String, u32, String, bool)> {
     if std::env::var("SWAYSOCK").is_err() && find_on_path("swaymsg").is_none() {
         return None;
     }
@@ -256,7 +342,14 @@ fn quoted_segments(value: &str) -> Vec<String> {
     segs
 }
 
-fn x11_active() -> Option<(String, u32, String)> {
+/// True when an EWMH state list carries the fullscreen atom.
+fn has_fullscreen_atom(state_value: &str) -> bool {
+    state_value
+        .split(',')
+        .any(|a| a.trim() == "_NET_WM_STATE_FULLSCREEN")
+}
+
+fn x11_active() -> Option<(String, u32, String, bool)> {
     if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
         return None;
     }
@@ -266,11 +359,23 @@ fn x11_active() -> Option<(String, u32, String)> {
     if id == "0x0" {
         return None;
     }
-    let props = run_fast("xprop", &["-id", &id, "_NET_WM_PID", "_NET_WM_NAME", "WM_NAME", "WM_CLASS"])?;
+    let props = run_fast(
+        "xprop",
+        &[
+            "-id",
+            &id,
+            "_NET_WM_PID",
+            "_NET_WM_NAME",
+            "WM_NAME",
+            "WM_CLASS",
+            "_NET_WM_STATE",
+        ],
+    )?;
     let mut pid = 0u32;
     let mut net_name: Option<String> = None;
     let mut wm_name: Option<String> = None;
     let mut class = String::new();
+    let mut fullscreen = false;
     for line in props.lines() {
         let Some((name, value)) = split_xprop_line(line) else {
             continue;
@@ -294,11 +399,14 @@ fn x11_active() -> Option<(String, u32, String)> {
                 // ("instance", "Class") — the class is the stable one.
                 class = segs.into_iter().next_back().unwrap_or_default();
             }
+            "_NET_WM_STATE" => {
+                fullscreen = has_fullscreen_atom(value);
+            }
             _ => {}
         }
     }
     let title = net_name.or(wm_name).unwrap_or_default();
-    Some((title, pid, class))
+    Some((title, pid, class, fullscreen))
 }
 
 /// In-process PATH lookup: no subprocess, no shell.
@@ -325,27 +433,30 @@ fn is_executable(p: &Path) -> bool {
 
 /// (window_title, exe_name, app), mirroring the Windows/macOS shape.
 pub fn foreground_window_info() -> Option<(String, String, String)> {
-    if let Some((title, pid, class)) = hyprland_active() {
-        return finish(title, pid, &class);
-    }
-    if let Some((title, pid, app)) = sway_active() {
-        return finish(title, pid, &app);
-    }
-    if let Some((title, pid, class)) = x11_active() {
-        return finish(title, pid, &class);
-    }
-    None
+    foreground_all().map(|(title, exe, app, _, _)| (title, exe, app))
 }
 
 pub fn foreground_pid() -> Option<u32> {
-    if let Some((_, pid, _)) = hyprland_active() {
-        return Some(pid);
+    foreground_all().map(|(_, _, _, pid, _)| pid)
+}
+
+/// One compositor query: (window_title, exe_name, app, pid, fullscreen).
+/// Prefer this over info + pid pairs — it used to cost two queries.
+pub fn foreground_all() -> Option<(String, String, String, u32, bool)> {
+    if let Some((title, pid, class, fullscreen)) = hyprland_active() {
+        return finish(title, pid, &class).map(|(t, e, a)| (t, e, a, pid, fullscreen));
     }
-    if let Some((_, pid, _)) = sway_active() {
-        return Some(pid);
+    if let Some((title, pid, app, fullscreen)) = sway_active() {
+        return finish(title, pid, &app).map(|(t, e, a)| (t, e, a, pid, fullscreen));
     }
-    if let Some((_, pid, _)) = x11_active() {
-        return Some(pid);
+    if let Some((title, pid, app, fullscreen)) = niri_active() {
+        return finish(title, pid, &app).map(|(t, e, a)| (t, e, a, pid, fullscreen));
+    }
+    if let Some((title, pid, app, fullscreen)) = gnome_active() {
+        return finish(title, pid, &app).map(|(t, e, a)| (t, e, a, pid, fullscreen));
+    }
+    if let Some((title, pid, class, fullscreen)) = x11_active() {
+        return finish(title, pid, &class).map(|(t, e, a)| (t, e, a, pid, fullscreen));
     }
     None
 }
@@ -975,8 +1086,83 @@ mod tests {
         sway_focused(&tree, &mut best);
         assert_eq!(
             best,
-            Some(("page".to_string(), 22, "firefox".to_string()))
+            Some(("page".to_string(), 22, "firefox".to_string(), false))
         );
+    }
+
+    #[test]
+    fn sway_reports_fullscreen_mode() {
+        let tree: serde_json::Value = serde_json::from_str(
+            r#"{"nodes":[{"name":"game","pid":7,"app_id":"game","focused":true,"fullscreen_mode":1}]}"#,
+        )
+        .unwrap();
+        let mut best = None;
+        sway_focused(&tree, &mut best);
+        assert_eq!(
+            best,
+            Some(("game".to_string(), 7, "game".to_string(), true))
+        );
+    }
+
+    #[test]
+    fn hypr_fullscreen_only_when_exclusive() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"fullscreen":1}"#).unwrap();
+        assert!(!hypr_fullscreen(&v));
+        let v: serde_json::Value = serde_json::from_str(r#"{"fullscreen":2}"#).unwrap();
+        assert!(hypr_fullscreen(&v));
+        let v: serde_json::Value = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(!hypr_fullscreen(&v));
+    }
+
+    #[test]
+    fn niri_parses_focused_window() {
+        let v: serde_json::Value = serde_json::from_str(
+            r#"{"id":5,"workspace_id":2,"title":"editor","app_id":"ghostty","pid":4242,"is_fullscreen":false}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_niri_window(&v),
+            Some(("editor".to_string(), 4242, "ghostty".to_string(), false))
+        );
+    }
+
+    #[test]
+    fn niri_rejects_null_and_pidless() {
+        let v: serde_json::Value = serde_json::from_str("null").unwrap();
+        assert!(parse_niri_window(&v).is_none());
+        let v: serde_json::Value =
+            serde_json::from_str(r#"{"title":"x","pid":0}"#).unwrap();
+        assert!(parse_niri_window(&v).is_none());
+    }
+
+    #[test]
+    fn gnome_parses_eval_reply() {
+        let reply = r#"{"t":"Files","p":5150,"c":"org.gnome.Nautilus","f":true}"#;
+        assert_eq!(
+            parse_gnome_focus(true, reply),
+            Some((
+                "Files".to_string(),
+                5150,
+                "org.gnome.Nautilus".to_string(),
+                true
+            ))
+        );
+    }
+
+    #[test]
+    fn gnome_rejects_failed_eval_and_null() {
+        assert!(parse_gnome_focus(false, "whatever").is_none());
+        assert!(parse_gnome_focus(true, "null").is_none());
+        assert!(parse_gnome_focus(true, "not json").is_none());
+    }
+
+    #[test]
+    fn x11_fullscreen_needs_exact_atom() {
+        assert!(has_fullscreen_atom(
+            "_NET_WM_STATE_MAXIMIZED_VERT, _NET_WM_STATE_FULLSCREEN"
+        ));
+        assert!(!has_fullscreen_atom("_NET_WM_STATE_MAXIMIZED_VERT"));
+        assert!(!has_fullscreen_atom(""));
     }
 
     #[test]

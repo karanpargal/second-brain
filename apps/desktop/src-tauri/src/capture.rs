@@ -21,9 +21,9 @@ pub struct CaptureStatus {
     pub paused_until: Option<String>,
     pub last_obs: Option<String>,
     pub spool_dir: String,
-    /// macOS: Accessibility (AX) permission granted. Always true on Windows.
+    /// macOS: Accessibility (AX) permission granted. Always true elsewhere.
     pub accessibility_trusted: bool,
-    /// Platform capture method: "ocr" (Windows) or "ax" (macOS).
+    /// Platform capture method: "ocr" (Windows) or "ax" (macOS/Linux).
     pub capture_method: String,
 }
 
@@ -634,11 +634,14 @@ impl CaptureEngine {
 
         #[cfg(target_os = "linux")]
         {
-            let Some((fg_title, fg_exe, fg_app)) = foreground_window_info() else {
+            let Some((fg_title, fg_exe, fg_app, fg_pid, fg_fullscreen)) =
+                crate::capture_linux::foreground_all()
+            else {
                 return;
             };
-            // Widget is always-on-top — read the last real app underneath it
-            let (title, exe, app, target_pid) = {
+            // Widget is always-on-top — read the last real app underneath it.
+            // A focused widget also proves nothing is exclusive-fullscreen.
+            let (title, exe, app, target_pid, fullscreen) = {
                 let mut s = self.shared.lock();
                 if fg_exe.to_lowercase().contains("second-brain") {
                     if s.last_user_exe.is_empty() {
@@ -649,14 +652,14 @@ impl CaptureEngine {
                         s.last_user_exe.clone(),
                         s.last_user_app.clone(),
                         s.last_user_pid,
+                        false,
                     )
                 } else {
-                    let pid = foreground_pid().unwrap_or(0);
                     s.last_user_title = fg_title.clone();
                     s.last_user_exe = fg_exe.clone();
                     s.last_user_app = fg_app.clone();
-                    s.last_user_pid = pid;
-                    (fg_title, fg_exe, fg_app, pid)
+                    s.last_user_pid = fg_pid;
+                    (fg_title, fg_exe, fg_app, fg_pid, fg_fullscreen)
                 }
             };
             let chat = is_chat_surface(&app, &exe, &title);
@@ -743,7 +746,7 @@ impl CaptureEngine {
                 "dwell_ms": 0,
                 "redacted": false,
                 "chat": chat,
-                "fullscreen": false,
+                "fullscreen": fullscreen,
                 "window_ocr": true
             }));
             if chat {
