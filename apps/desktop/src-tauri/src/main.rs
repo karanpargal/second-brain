@@ -318,8 +318,16 @@ fn main() {
             MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ))
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_main(app);
+        // Second launches signal the primary instead of starting a new app:
+        // `--toggle` flips the widget (compositor keybinds use this where
+        // global grabs can't reach, i.e. Wayland), anything else shows it.
+        // A first launch with --toggle just starts normally (widget shows).
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if args.iter().any(|a| a == "--toggle") {
+                toggle_main_debounced(app);
+            } else {
+                show_main(app);
+            }
         }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())

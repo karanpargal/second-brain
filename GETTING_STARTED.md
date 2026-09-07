@@ -104,7 +104,21 @@ npm run db:migrate && npm run db:seed
 npm run dev:desktop       # Tauri shell; core + widget + capture start themselves
 ```
 
-Linux capture notes: foreground window titles work on Hyprland (`hyprctl`), Sway (`swaymsg`), and X11 (`xprop`); browser history covers Chromium-family + Firefox/Zen. On-screen text comes from the AT-SPI accessibility tree (the Linux counterpart to macOS Accessibility) — no screenshots, pixels never touch disk. At startup the app enables the `toolkit-accessibility` key and publishes `org.a11y.Status` (`IsEnabled` + `ScreenReaderEnabled`, released on quit) so GTK/Qt expose their trees; restart apps you want captured after first launch. If the session bus is missing it starts `at-spi-bus-launcher` (also found at `/usr/lib` / `/usr/libexec` outside `PATH`); if the bus name is owned but its socket is dead, it restarts the stale same-user launcher instead of failing open, and re-checks the bus whenever a poll finds no tree. Per-toolkit extras: Chromium/Electron need `--force-renderer-accessibility`, Qt needs `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1`. When the focused app exposes no tree, the diagnosed reason is logged once per app to `desktop.log` in the data dir. Fullscreen state is reported on Hyprland/Sway/X11. Titles additionally work on niri (`niri msg`) and stock GNOME (Shell `Eval`); other Wayland compositors fall back to browser history only. `Ctrl+Shift+Space` binds over X11 plus the GlobalShortcuts portal where a backend exists (GNOME/KDE); the outcome is logged to `desktop.log`. The widget menu carries pause/resume/quit, so no tray host is needed. Idle time uses the native source per session: XScreenSaver on X11, Mutter IdleMonitor on GNOME/Cinnamon, ext-idle-notify on wlroots/KDE Wayland. Tray icon needs an AppIndicator extension on Wayland; the widget works without it. The `Ctrl+Shift+Space` global shortcut is reliable on X11 and best-effort on Wayland.
+Linux capture notes: foreground window titles work on Hyprland (`hyprctl`), Sway (`swaymsg`), and X11 (`xprop`); browser history covers Chromium-family + Firefox/Zen. On-screen text comes from the AT-SPI accessibility tree (the Linux counterpart to macOS Accessibility) — no screenshots, pixels never touch disk. At startup the app enables the `toolkit-accessibility` key and publishes `org.a11y.Status` (`IsEnabled` + `ScreenReaderEnabled`, released on quit) so GTK/Qt expose their trees; restart apps you want captured after first launch. If the session bus is missing it starts `at-spi-bus-launcher` (also found at `/usr/lib` / `/usr/libexec` outside `PATH`); if the bus name is owned but its socket is dead, it restarts the stale same-user launcher instead of failing open, and re-checks the bus whenever a poll finds no tree. Per-toolkit extras: Chromium/Electron need `--force-renderer-accessibility`, Qt needs `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1`. When the focused app exposes no tree, the diagnosed reason is logged once per app to `desktop.log` in the data dir. Fullscreen state is reported on Hyprland/Sway/X11. Titles additionally work on niri (`niri msg`) and stock GNOME (Shell `Eval`); other Wayland compositors fall back to browser history only. The widget menu carries pause/resume/quit, so no tray host is needed. Idle time uses the native source per session: XScreenSaver on X11, Mutter IdleMonitor on GNOME/Cinnamon, ext-idle-notify on wlroots/KDE Wayland. Tray icon needs an AppIndicator extension on Wayland; the widget works without it. `Ctrl+Shift+Space` binds over X11 plus the GlobalShortcuts portal where a backend exists. Where neither reaches (e.g. Hyprland), bind the compositor to the toggle helper instead — it signals the running app, or starts it if it isn't running:
+
+```ini
+# Hyprland (hyprland.conf)
+bind = CTRL SHIFT, SPACE, exec, second-brain-desktop --toggle
+# Sway (config)
+bindsym Ctrl+Shift+space exec second-brain-desktop --toggle
+```
+
+```kdl
+// niri (config.kdl)
+binds {
+    "Ctrl+Shift+Space" { spawn "second-brain-desktop" "--toggle"; }
+}
+```
 
 The app starts the local core, floating widget, and PC capture. You should not need extra terminals.
 
