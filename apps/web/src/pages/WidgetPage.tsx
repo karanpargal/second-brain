@@ -846,7 +846,7 @@ export function WidgetPage() {
     }
     if (clip.peak < MIN_VOICE_PEAK) {
       setAskHint(
-        "No speech in the clip (level bar stayed flat). Check Windows mic privacy for Second Brain, then hold Mic and watch the bar bounce.",
+        "No speech in the clip (level bar stayed flat). Check system mic privacy for Second Brain, then hold Mic and watch the bar bounce.",
       );
       sendingVoiceRef.current = false;
       return;

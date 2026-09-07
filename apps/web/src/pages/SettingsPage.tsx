@@ -525,10 +525,10 @@ export function SettingsPage() {
         {(
           [
             ["window", "Foreground window titles"],
-            ["browser", "Chrome / Edge / Brave history"],
+            ["browser", "Browser history (Chrome / Edge / Brave / Firefox)"],
             [
               "ocr",
-              "Active-window text (OCR on Windows; Accessibility on macOS — never saved as image)",
+              "Active-window text (Windows OCR / macOS Accessibility; Linux captures titles + history only — never saved as image)",
             ],
           ] as const
         ).map(([key, label]) => (

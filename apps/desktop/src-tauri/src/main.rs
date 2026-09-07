@@ -5,6 +5,8 @@ mod capture;
 mod core;
 #[cfg(target_os = "macos")]
 mod capture_mac;
+#[cfg(target_os = "linux")]
+mod capture_linux;
 
 use capture::{CaptureEngine, CaptureStatus};
 use std::sync::Arc;
